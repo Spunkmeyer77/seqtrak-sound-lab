@@ -1,0 +1,107 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        run: echo "ver=$(grep -m1 -oE 'VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | tail -1 | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Configure
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build build --config Release --target SEQTRAKEditor_AU SEQTRAKEditor_VST3 SEQTRAKEditor_Standalone -- -quiet
+      - name: Verify minimum macOS 12.0
+        run: |
+          A=build/SEQTRAKEditor_artefacts/Release
+          for f in "$A/AU/SEQTRAK Editor.component/Contents/MacOS/SEQTRAK Editor" \
+                   "$A/VST3/SEQTRAK Editor.vst3/Contents/MacOS/SEQTRAK Editor" \
+                   "$A/Standalone/SEQTRAK Editor.app/Contents/MacOS/SEQTRAK Editor"; do
+            echo "== $f"; xcrun vtool -show-build "$f" | tee /tmp/b.txt
+            if grep -E 'minos' /tmp/b.txt | grep -vq '12\.0'; then echo "minos is not 12.0"; exit 1; fi
+            lipo -archs "$f"
+          done
+      - name: Validate AU
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/SEQTRAKEditor_artefacts/Release/AU/SEQTRAK Editor.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          sleep 3
+          auval -v aumu SqEd TrLb
+      - name: Package
+        run: |
+          V=${{ steps.v.outputs.ver }}
+          A=build/SEQTRAKEditor_artefacts/Release
+          codesign --force --deep -s - "$A/AU/SEQTRAK Editor.component"
+          codesign --force --deep -s - "$A/VST3/SEQTRAK Editor.vst3"
+          codesign --force --deep -s - "$A/Standalone/SEQTRAK Editor.app"
+          mkdir -p pkg/au/Library/Audio/Plug-Ins/Components pkg/vst3/Library/Audio/Plug-Ins/VST3 pkg/app/Applications out
+          cp -R "$A/AU/SEQTRAK Editor.component" pkg/au/Library/Audio/Plug-Ins/Components/
+          cp -R "$A/VST3/SEQTRAK Editor.vst3" pkg/vst3/Library/Audio/Plug-Ins/VST3/
+          cp -R "$A/Standalone/SEQTRAK Editor.app" pkg/app/Applications/
+          for c in au vst3 app; do
+            pkgbuild --analyze --root pkg/$c pkg/$c.plist
+            /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkg/$c.plist
+            pkgbuild --root pkg/$c --component-plist pkg/$c.plist --identifier com.transistorlabs.seqtrakeditor.$c \
+              --version "$V" --install-location / pkg/$c.pkg
+          done
+          productbuild --synthesize --package pkg/au.pkg --package pkg/vst3.pkg --package pkg/app.pkg pkg/dist.xml
+          sed -i '' 's#<installer-gui-script minSpecVersion="1">#<installer-gui-script minSpecVersion="1"><title>SEQTRAK Editor '"$V"'</title><allowed-os-versions><os-version min="12.0"/></allowed-os-versions>#' pkg/dist.xml
+          productbuild --distribution pkg/dist.xml --package-path pkg "out/SEQTRAK-Editor-v$V-macOS.pkg"
+          mkdir -p plug && cp -R "$A/AU/SEQTRAK Editor.component" "$A/VST3/SEQTRAK Editor.vst3" "$A/Standalone/SEQTRAK Editor.app" plug/
+          ditto -c -k plug "out/SEQTRAK-Editor-v$V-macOS-plugins.zip"
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: out/* }
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "ver=$(grep -m1 -oE 'VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | tail -1 | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build --config Release --target SEQTRAKEditor_VST3 SEQTRAKEditor_Standalone
+      - name: Package
+        shell: bash
+        run: |
+          V=${{ steps.v.outputs.ver }}
+          A=build/SEQTRAKEditor_artefacts/Release
+          mkdir -p out plug
+          cp -R "$A/VST3/SEQTRAK Editor.vst3" plug/
+          cp "$A/Standalone/SEQTRAK Editor.exe" plug/
+          (cd plug && 7z a -tzip "../out/SEQTRAK-Editor-v$V-Windows-plugins.zip" . > /dev/null)
+          choco install innosetup -y --no-progress > /dev/null || true
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          "$ISCC" //DMyVersion=$V //DSrc="$(cygpath -w "$PWD/plug")" //O"$(cygpath -w "$PWD/out")" installer/windows.iss
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: out/* }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Publish release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          T=${GITHUB_REF_NAME}
+          cp docs/*.pdf dist/
+          gh release create "$T" dist/* --title "SEQTRAK Editor $T" --notes-file docs/release-notes.md || \
+          gh release upload "$T" dist/* --clobber

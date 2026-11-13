@@ -1,0 +1,8 @@
+SEQTRAK Editor v0.3.0 — Transistor Labs
+
+- 11-track host-synced step sequencer for Yamaha SEQTRAK (per-step note, velocity, probability, micro timing, gate; swing; per-track length up to 128 steps)
+- 16-slot pattern bank switched by Program Change, with Sound Recall
+- Full USB SysEx sound editor (presets, Deep Edit, Track FX, randomizer, snapshots)
+
+macOS 12+ (AU/VST3/Standalone, universal) · Windows 10/11 64-bit (VST3/Standalone).
+The macOS installer is not notarised: right-click → Open. See the User Manual.
