@@ -91,7 +91,7 @@ jobs:
         with: { name: windows, path: out/* }
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
     needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
@@ -101,7 +101,7 @@ jobs:
       - name: Publish release
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          T=${GITHUB_REF_NAME}
+          T=v$(grep -m1 -oE 'VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | tail -1 | cut -d' ' -f2)
           cp docs/*.pdf dist/
-          gh release create "$T" dist/* --title "SEQTRAK Editor $T" --notes-file docs/release-notes.md || \
+          gh release create "$T" dist/* --target "$GITHUB_SHA" --title "SEQTRAK Editor $T" --notes-file docs/release-notes.md || \
           gh release upload "$T" dist/* --clobber
