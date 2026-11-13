@@ -51,7 +51,7 @@ jobs:
           cp -R "$A/Standalone/SEQTRAK Editor.app" pkg/app/Applications/
           for c in au vst3 app; do
             pkgbuild --analyze --root pkg/$c pkg/$c.plist
-            /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkg/$c.plist
+            /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkg/$c.plist 2>/dev/null || true
             pkgbuild --root pkg/$c --component-plist pkg/$c.plist --identifier com.transistorlabs.seqtrakeditor.$c \
               --version "$V" --install-location / pkg/$c.pkg
           done
