@@ -417,6 +417,7 @@ using seqtrak::Grid;
 class Panel final : public Component, private Timer, private ListBoxModel
 {
 public:
+    Panel* self() noexcept { return this; }
     explicit Panel (Processor& p)
         : processor (p), presets (parse (BinaryData::Presets_json, BinaryData::Presets_jsonSize)),
           schema (parse (BinaryData::VoiceSchema_json, BinaryData::VoiceSchema_jsonSize)),
@@ -759,7 +760,7 @@ void Panel::makeMain()
                 for (int amount = 50; amount <= 75; ++amount)
                     menu.addItem (amount, String (amount) + "%", true, swing == amount);
                 menu.showMenuAsync (PopupMenu::Options().withMousePosition(),
-                    [safe = Component::SafePointer<Panel> (this)] (int amount)
+                    [safe = Component::SafePointer<Panel> (self())] (int amount)
                     {
                         if (safe == nullptr || amount == 0) return;
                         safe->swing = amount; safe->publishSequence(); safe->repaint();
@@ -930,7 +931,7 @@ void Panel::mouseDown (const MouseEvent& event)
     else if (event.y < 335)
     {
         heldPad = step;
-        Timer::callAfterDelay (400, [safe = Component::SafePointer<Panel> (this), step, press = ++padPress]
+        Timer::callAfterDelay (400, [safe = Component::SafePointer<Panel> (self()), step, press = ++padPress]
         {
             if (safe == nullptr || safe->heldPad != step || safe->padPress != press || !safe->isMouseButtonDown()) return;
             safe->heldPad = -1;
@@ -1020,7 +1021,7 @@ void Panel::presetDrawer()
         select.onChange = [this, &select]
         {
             presetPad = jmax (0, select.getSelectedItemIndex());
-            MessageManager::callAsync ([safe = Component::SafePointer<Panel> (this)]
+            MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
                 { if (safe != nullptr && safe->drawer == 0) safe->showDrawer (0); });
         };
         label (panel, { 148, 342, 83, 26 }, "MIDI NOTE", darkOrange);
@@ -1186,7 +1187,7 @@ void Panel::voiceDrawer (bool random)
         unit.onChange = [this, &unit]
         {
             voicePart = unit.getSelectedItemIndex();
-            MessageManager::callAsync ([safe = Component::SafePointer<Panel> (this)]
+            MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
                 { if (safe != nullptr && safe->drawer == 1) safe->showDrawer (1); });
         };
     }
@@ -1374,7 +1375,7 @@ void Panel::effectDrawer()
     {
         fxFollowHardware = false;
         effectChoice = choice.getSelectedItemIndex();
-        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (this)]
+        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
             { if (safe != nullptr && safe->drawer == 2) safe->showDrawer (2); });
     };
     button (panel, { 269, 49, 107, 27 }, "READ FX", [this]
@@ -1491,7 +1492,7 @@ void Panel::lengthMenu()
         menu.addSubMenu (String (pageIndex * 16 + 1) + "-" + String ((pageIndex + 1) * 16), part);
     }
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (lengthButton),
-        [safe = Component::SafePointer<Panel> (this), t = track] (int result)
+        [safe = Component::SafePointer<Panel> (self()), t = track] (int result)
         {
             if (safe == nullptr || result == 0) return;
             safe->lengths[size_t (t)] = result;
@@ -1528,7 +1529,7 @@ void Panel::patternDrawer()
     target.onChange = [this, &target]
     {
         slotTarget = jmax (0, target.getSelectedItemIndex());
-        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (this)]
+        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
             { if (safe != nullptr && safe->drawer == 4) safe->showDrawer (4, false); });
     };
     auto& name = make<TextEditor> (panel, { 204, 154, 204, 25 });
@@ -1600,7 +1601,7 @@ void Panel::choosePatternFile (bool whole, bool exporting)
     const auto mode = exporting ? FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting
                                 : FileBrowserComponent::openMode;
     patternFile->launchAsync (mode | FileBrowserComponent::canSelectFiles,
-        [safe = Component::SafePointer<Panel> (this), whole, exporting, slot = slotTarget] (const FileChooser& chooser)
+        [safe = Component::SafePointer<Panel> (self()), whole, exporting, slot = slotTarget] (const FileChooser& chooser)
         {
             if (safe == nullptr || chooser.getURLResult().isEmpty()) return;
             auto& processor = safe->processor;
@@ -1676,7 +1677,7 @@ void Panel::chooseSnapshotFile (bool exporting)
     const auto mode = exporting ? FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting
                                 : FileBrowserComponent::openMode;
     snapshotFile->launchAsync (mode | FileBrowserComponent::canSelectFiles,
-        [safe = Component::SafePointer<Panel> (this), exporting] (const FileChooser& chooser)
+        [safe = Component::SafePointer<Panel> (self()), exporting] (const FileChooser& chooser)
         {
             if (safe == nullptr || chooser.getURLResult().isEmpty()) return;
             const auto file = chooser.getResult();
