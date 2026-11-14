@@ -1,4 +1,6 @@
-SEQTRAK Editor v0.4.0 — Transistor Labs
+SEQTRAK Editor v0.4.1 — Transistor Labs
+
+- Fix: About opens inside the plugin window; drawers no longer jump when opened
 
 - Hardware sequencer mode: switch SEQTRAK internal patterns and mutes per track, automatable from the DAW
 - Tempo sync, record quantize and hardware follow

@@ -743,10 +743,9 @@ private:
     public:
         void start (Component& c)
         {
-            target = &c;
-            started = Time::getMillisecondCounterHiRes();
-            target->setTopLeftPosition (869, 0);
-            startTimerHz (60);
+            // No slide: place the drawer at its final position immediately.
+            c.setTopLeftPosition (841, 0);
+            target = nullptr;
         }
         void reset() { stopTimer(); target = nullptr; }
     private:
@@ -809,7 +808,7 @@ private:
     Label* presetStatus = nullptr;
     TextButton* presetLoad = nullptr;
     std::vector<int> matches;
-    std::unique_ptr<DialogWindow> aboutWindow;
+    std::unique_ptr<Component> aboutWindow;
     std::unique_ptr<FileChooser> snapshotFile;
 };
 
@@ -2212,24 +2211,54 @@ private:
     HyperlinkButton site { "ticcoross.gumroad.com", URL ("https://ticcoross.gumroad.com/") };
 };
 
-class AboutWindow final : public DialogWindow
+class AboutOverlay final : public Component
 {
 public:
-    AboutWindow() : DialogWindow ("About SEQTRAK Editor", orange, true, true)
+    AboutOverlay()
     {
-        setUsingNativeTitleBar (true);
-        setContentOwned (new AboutContent(), true);
-        setResizable (false, false);
+        addAndMakeVisible (content);
+        closeButton.setColour (TextButton::buttonColourId, darkOrange);
+        closeButton.setColour (TextButton::textColourOffId, cream);
+        closeButton.onClick = [this] { setVisible (false); };
+        content.addAndMakeVisible (closeButton);
+        setWantsKeyboardFocus (true);
     }
-    void closeButtonPressed() override { setVisible (false); }
+    void resized() override
+    {
+        content.setCentrePosition (getLocalBounds().getCentre());
+        closeButton.setBounds (content.getWidth() - 40, content.getHeight() - 30, 30, 22);
+    }
+    void paint (Graphics& g) override
+    {
+        g.fillAll (Colours::black.withAlpha (0.55f));
+        g.setColour (Colours::black.withAlpha (0.35f));
+        g.fillRect (content.getBounds().translated (6, 6));
+    }
+    void mouseDown (const MouseEvent& e) override
+    {
+        if (!content.getBounds().contains (e.getPosition())) setVisible (false);
+    }
+    bool keyPressed (const KeyPress& k) override
+    {
+        if (k == KeyPress::escapeKey) { setVisible (false); return true; }
+        return false;
+    }
+private:
+    AboutContent content;
+    TextButton closeButton { "X" };
 };
 
 void Panel::about()
 {
-    if (!aboutWindow) aboutWindow = std::make_unique<AboutWindow>();
-    aboutWindow->centreAroundComponent (this, aboutWindow->getWidth(), aboutWindow->getHeight());
+    if (!aboutWindow)
+    {
+        aboutWindow = std::make_unique<AboutOverlay>();
+        addChildComponent (*aboutWindow);
+    }
+    aboutWindow->setBounds (getLocalBounds());
     aboutWindow->setVisible (true);
     aboutWindow->toFront (true);
+    aboutWindow->grabKeyboardFocus();
 }
 
 void Panel::editStep (int index)
