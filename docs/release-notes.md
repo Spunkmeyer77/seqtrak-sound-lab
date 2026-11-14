@@ -1,5 +1,7 @@
-SEQTRAK Editor v0.3.0 — Transistor Labs
+SEQTRAK Editor v0.4.0 — Transistor Labs
 
+- Hardware sequencer mode: switch SEQTRAK internal patterns and mutes per track, automatable from the DAW
+- Tempo sync, record quantize and hardware follow
 - 11-track host-synced step sequencer for Yamaha SEQTRAK (per-step note, velocity, probability, micro timing, gate; swing; per-track length up to 128 steps)
 - 16-slot pattern bank switched by Program Change, with Sound Recall
 - Full USB SysEx sound editor (presets, Deep Edit, Track FX, randomizer, snapshots)

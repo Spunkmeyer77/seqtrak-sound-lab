@@ -113,24 +113,27 @@ public:
         bank.fill (-1);
     }
 
-    struct ScheduledNote { double time; uint8 status, note, velocity; };
+    struct ScheduledMessage { double time = 0; std::array<uint8, 12> bytes {}; int size = 0; };
+
+    unsigned connectionEpoch() const { return usbEpoch.load(); }
 
     void scheduleNote (bool on, int part, int note, int velocity, double time)
     {
-        if (!usbReady.load (std::memory_order_relaxed)) return;
-        const auto write = usbNotesFifo.write (1);
-        if (write.blockSize1 == 1)
-            usbNotes[size_t (write.startIndex1)] = { time, uint8 ((on ? 144 : 128) + part), uint8 (note), uint8 (velocity) };
-        else usbOverflow.store (true);
+        schedule ({ time, { uint8 ((on ? 144 : 128) + part), uint8 (note), uint8 (velocity) }, 3 });
     }
 
-    void cancelScheduledNotes()
+    void scheduleControl (Address address, int value, int width, double time)
     {
-        if (!usbReady.load (std::memory_order_relaxed)) return;
-        const auto write = usbNotesFifo.write (1);
-        if (write.blockSize1 == 1) usbNotes[size_t (write.startIndex1)] = { 0, 0, 0, 0 };
-        else usbOverflow.store (true);
+        ScheduledMessage message { time, { 0xf0, 0x43, uint8 (0x10 + usbDevice.load()), 0x7f, 0x1c, 0x0c,
+            uint8 (address[0]), uint8 (address[1]), uint8 (address[2]) }, 10 + width };
+        int index = 9;
+        if (width == 2) message.bytes[size_t (index++)] = uint8 (value >> 7);
+        message.bytes[size_t (index++)] = uint8 (value & 127);
+        message.bytes[size_t (index)] = 0xf7;
+        schedule (message);
     }
+
+    void cancelScheduledNotes() { schedule ({}); }
 
     void recallSound (int part, int number, const std::map<Address, int>& voice,
                       int effect, const std::map<int, int>& fx, bool full, int pad = 0)
@@ -170,7 +173,7 @@ public:
         ++revision;
     }
 
-    std::function<void (int)> onProgramChange;
+    std::function<void (int)> onProgramChange, onTrackSelected, onSamplerPad;
     std::function<void (int, int, int)> onPresetLoad;
     std::function<void()> onSequenceTick;
 
@@ -350,6 +353,13 @@ public:
     std::array<unsigned, 11> readEpoch {};
 
 private:
+    void schedule (const ScheduledMessage& message)
+    {
+        if (!usbReady.load (std::memory_order_acquire)) return;
+        const auto write = usbNotesFifo.write (1);
+        if (write.blockSize1 == 1) usbNotes[size_t (write.startIndex1)] = message;
+        else usbOverflow.store (true);
+    }
     static double now() { return Time::getMillisecondCounterHiRes(); }
     void enqueue (Bytes bytes) { if (verified && output != nullptr) outbox.push_back (std::move (bytes)); }
     void transmit (const Bytes& bytes)
@@ -526,7 +536,9 @@ private:
             && bytes[6] == 0 && bytes[7] == 65 && bytes[8] == 100 && bytes[9] == 6)
         {
             identification = 0; verified = true;
+            usbDevice.store (device);
             usbReady.store (true);
+            usbEpoch.fetch_add (1);
             status = "SEQTRAK identified. Read hardware to synchronize a track.";
             selectTrack (selected);
             ++revision;
@@ -565,6 +577,12 @@ private:
         if (!decode (bytes, device, packet)) return;
         const auto [hi, mid, low] = packet.address;
         const auto& data = packet.data;
+        if (!packet.bulk && hi == 0x01 && mid == 0x10 && data.size() == 1)
+        {
+            if (low == 0x27 && data[0] < 11 && onTrackSelected) onTrackSelected (data[0]);
+            if (low == 0x2c && data[0] < 7 && onSamplerPad) onSamplerPad (data[0]);
+            if (low == 0x27 || low == 0x28 || low == 0x2c) return;
+        }
         if (!packet.bulk && hi == 1 && mid >= 0x10 && mid < 0x1a && low == 0x33 && data.size() == 2)
         {
             tracks[size_t (mid - 0x10)].number = data[0] * 128 + data[1] + 1;
@@ -623,15 +641,14 @@ private:
             for (int i = start; i < start + count; ++i)
             {
                 const auto& note = usbNotes[size_t (i)];
-                if (note.status == 0)
+                if (note.size == 0)
                 {
                     buffer.clear();
                     output->clearAllPendingMessages();
                     for (int part = 0; part < 11; ++part) transmit ({ uint8 (176 + part), 120, 0 });
                     continue;
                 }
-                const uint8 data[] { note.status, note.note, note.velocity };
-                buffer.addEvent (data, 3, jmax (0, roundToInt ((note.time - time) * 1000.0)));
+                buffer.addEvent (note.bytes.data(), note.size, jmax (0, roundToInt ((note.time - time) * 1000.0)));
             }
         };
         add (read.startIndex1, read.blockSize1);
@@ -685,8 +702,10 @@ private:
         }
     }
 
+    std::atomic<int> usbDevice { 0 };
+    std::atomic<unsigned> usbEpoch { 0 };
     std::atomic<bool> usbReady { false }, usbOverflow { false };
-    std::array<ScheduledNote, 8192> usbNotes {};
+    std::array<ScheduledMessage, 8192> usbNotes {};
     AbstractFifo usbNotesFifo { int (usbNotes.size()) };
     std::array<std::pair<int, double>, 16> sentPrograms {};
     double nextTransmit = 0;

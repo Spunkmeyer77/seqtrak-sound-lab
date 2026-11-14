@@ -27,7 +27,8 @@ inline var encodePattern (const Pattern& p)
         for (const auto& [a, value] : s.voice) voice.add (Array<var> { a[0], a[1], a[2], value });
         for (const auto& [offset, value] : s.fx) fx.add (Array<var> { offset, value });
         tracks.add (object ({ {"length", p.sequence.lengths[index]}, {"mute", p.sequence.mix[index][0]},
-            {"solo", p.sequence.mix[index][1]}, {"steps", steps}, {"number", s.number}, {"name", s.name},
+            {"solo", p.sequence.mix[index][1]}, {"hardwarePattern", p.sequence.hardware[index].pattern + 1},
+            {"hardwareMute", p.sequence.hardware[index].muted}, {"steps", steps}, {"number", s.number}, {"name", s.name},
             {"voice", voice}, {"effect", s.effect}, {"fx", fx} }));
     }
     for (int number : p.samples) samples.add (number);
@@ -67,6 +68,9 @@ inline bool decodePattern (const var& v, Pattern& p, const var& schema, const Ha
             return false;
         p.sequence.lengths[index] = int (row["length"]);
         p.sequence.mix[index] = { bool (row["mute"]), bool (row["solo"]) };
+        const auto hwPattern = row["hardwarePattern"], hwMute = row["hardwareMute"];
+        if ((!hwPattern.isVoid() && !integer (hwPattern, 1, 6)) || (!hwMute.isVoid() && !hwMute.isBool())) return false;
+        p.sequence.hardware[index] = { hwPattern.isVoid() ? 0 : int (hwPattern) - 1, bool (hwMute) };
         auto& sound = p.sounds[index];
         sound.number = int (row["number"]);
         sound.name = row["name"].toString().substring (0, 128);

@@ -1,6 +1,6 @@
 # SEQTRAK Editor
 
-**Transistor Labs · v0.3.0 · USB hardware editor and sequencer**
+**Transistor Labs · v0.4.0 · USB hardware editor and sequencer**
 
 Native JUCE/C++17 source with a CMake project. The 1400 × 420 editor offers 75%, 100%, 125%, and 150% scaling. Click a track label to select it. The track LEDs indicate selection (white), mute (amber), and solo (green). Click a top-row step to toggle it. Open the corresponding lower pad to edit velocity, MIDI note, probability, and micro timing. Velocity is visible while that step is being edited.
 
@@ -64,3 +64,14 @@ cmake --build build-win --config Release --target SEQTRAKEditor_VST3 SEQTRAKEdit
 ```
 
 Launch the standalone executable from `build-win/SEQTRAKEditor_artefacts/Release/Standalone` or copy the complete `SEQTRAK Editor.vst3` bundle from the sibling `VST3` directory into `C:\Program Files\Common Files\VST3` and rescan in the DAW. AU is a macOS format.
+
+## Hardware sequencer mode (v0.4.0)
+
+- In **Patterns**, set **Sequencer Mode** to **PLUGIN** for the existing note sequencer or **HARDWARE** to select patterns in SEQTRAK's own sequencer. **Track Override** applies to the selected track and can follow the global mode or explicitly use either mode. Hardware tracks suppress generated plug-in notes. Start SEQTRAK's internal sequencer for those tracks to play.
+- Choose a slot in the target drop-down and a track on the main panel, then set **SEQTRAK Pattern** (1–6) and **HW Mute**. The sixteen slots store these settings independently for all eleven tracks. The same Immediate, Next beat and Next bar options apply to UI and Program Change launches. The dot matrix shows the selected hardware track's pattern number in Hardware mode.
+- The host exposes **Pattern &lt;track&gt;** and **Mute &lt;track&gt;** for all eleven tracks. These parameters affect hardware-routed tracks. Automation is sampled in the processing callback and changes are sent at the configured switch boundary, so Next beat can mute a track during its pattern. Launching another slot recalls that slot's stored values. Later automation can override them without changing the stored slot.
+- In **Connection**, **Send tempo to SEQTRAK** sends the host BPM or standalone BPM rounded to a whole number and limited to 5–300. It sends the initial value after identification and subsequent changes. **Record Quantize** can leave the device unchanged or set Off, 1/32, 1/16T, 1/16, 1/8T, or 1/8.
+- **Hardware Follow** follows track selection on SEQTRAK and flashes sampler pad hits on the dot-matrix display. It is independent of the existing sequencer page Follow control.
+- The pattern, mute, tempo, record quantize, track-select and sampler-hit SysEx mappings come from community testing of SEQTRAK OS 2.x. The Yamaha device-number nibble is the displayed device number minus one.
+
+Existing v0.3.0 banks open in PLUGIN mode by default with hardware pattern 1 and unmuted hardware tracks. Existing plug-in IDs are retained. The macOS deployment target is 12.0.

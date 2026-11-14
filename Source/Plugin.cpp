@@ -127,6 +127,13 @@ public:
                             parse (BinaryData::Effects_json, BinaryData::Effects_jsonSize), tracks),
                   voiceSchema (parse (BinaryData::VoiceSchema_json, BinaryData::VoiceSchema_jsonSize))
     {
+        for (int t = 0; t < 11; ++t)
+        {
+            patternParameters[size_t (t)] = state.getRawParameterValue ("hwPattern" + String (t));
+            muteParameters[size_t (t)] = state.getRawParameterValue ("hwMute" + String (t));
+        }
+        hardware.onTrackSelected = [this] (int t) { if (bank.hardwareFollow.load()) bank.selectedTrack.store (t); };
+        hardware.onSamplerPad = [this] (int pad) { if (bank.hardwareFollow.load()) bank.samplerPad.store (pad); };
         hardware.onProgramChange = [this] (int program) { bank.hardwareProgram.store (program); };
         hardware.onPresetLoad = [this] (int part, int number, int pad)
         {
@@ -205,6 +212,9 @@ public:
         sampleRate = rate;
         sequencer.reset (bank.current.load(), bank.editGeneration.load());
         standalonePpq = 0;
+        controlSlot = sentTempo = sentRecordQuantize = -1;
+        controlExpected = 0;
+        controlWasPlaying = false;
         generated.ensureSize (65536);
     }
     void releaseResources() override
@@ -242,6 +252,7 @@ public:
         }
         audioGeneration = bank.editGeneration.load();
         seqtrak::Clock clock;
+        bool hasHostTempo = false;
         clock.bpm = bank.tempo.load();
         if (wrapperType == wrapperType_Standalone)
         {
@@ -257,8 +268,11 @@ public:
                 const auto ppq = pos->getPpqPosition();
                 clock.playing = pos->getIsPlaying() && bool (ppq);
                 clock.ppq = ppq.orFallback (0.0);
-                const auto tempo = pos->getBpm().orFallback (clock.bpm);
-                if (std::isfinite (tempo) && tempo > 0) clock.bpm = tempo;
+                if (const auto tempo = pos->getBpm(); tempo && std::isfinite (*tempo) && *tempo > 0)
+                {
+                    clock.bpm = *tempo;
+                    hasHostTempo = true;
+                }
                 const auto signature = pos->getTimeSignature();
                 if (signature && signature->numerator > 0 && signature->denominator > 0)
                 {
@@ -270,6 +284,28 @@ public:
         }
         const auto blockTime = Time::getMillisecondCounterHiRes() + 4.0;
         generated.clear();
+        const auto epoch = hardware.connectionEpoch();
+        if (controlEpoch != epoch)
+        {
+            controlEpoch = epoch;
+            controlSlot = -1;
+            sentTempo = sentRecordQuantize = -1;
+        }
+        const auto increment = clock.bpm / (60.0 * sampleRate);
+        const bool transportJump = !clock.playing || !controlWasPlaying
+            || std::abs (clock.ppq - controlExpected) > increment * 2.0;
+        const int switchTiming = bank.quantize.load();
+        const bool restartControls = controlGeneration != audioGeneration || transportJump || controlTiming != switchTiming;
+        controlTiming = switchTiming;
+        if (controlGeneration != audioGeneration) controlSlot = -1;
+        if (controlGeneration != audioGeneration || (transportJump && controlWasPlaying))
+        {
+            for (auto& control : trackControls)
+                if (control.enabled) control.pending = control.force = true;
+        }
+        controlGeneration = audioGeneration;
+        controlExpected = clock.ppq + count * increment;
+        controlWasPlaying = clock.playing;
         const int ui = bank.requested.exchange (-1);
         const int usb = bank.hardwareProgram.exchange (-1);
         sequencer.render (bank, audioSequences, clock, count, sampleRate, midi,
@@ -290,7 +326,26 @@ public:
                     const uint8 message[] { 192, uint8 (slot) };
                     generated.addEvent (message, 2, sample);
                 }
-            }, [this] { hardware.cancelScheduledNotes(); });
+            }, [this] { hardware.cancelScheduledNotes(); },
+            [this, clock, increment, blockTime, restartControls] (int slot, int first, int end, double tolerance)
+            {
+                renderHardwareControls (slot, first, end, clock, increment, blockTime, tolerance,
+                                        restartControls && first == 0);
+            });
+        if (bank.sendTempo.load() && (wrapperType == wrapperType_Standalone || hasHostTempo))
+        {
+            const int bpm = roundToInt (jlimit (5.0, 300.0, clock.bpm));
+            if (bpm != sentTempo)
+            {
+                hardware.scheduleControl ({ 0x30, 0x40, 0x76 }, bpm - 5, 2, blockTime);
+                sentTempo = bpm;
+            }
+        }
+        else sentTempo = -1;
+        const int record = bank.recordQuantize.load();
+        if (record >= 0 && record != sentRecordQuantize)
+            hardware.scheduleControl ({ 0x00, 0x00, 0x1f }, record, 1, blockTime);
+        sentRecordQuantize = record;
         midi.clear();
         midi.addEvents (generated, 0, count, 0);
     }
@@ -305,6 +360,7 @@ public:
             if (usb) hardware.scheduleNote (on, t, n, v, Time::getMillisecondCounterHiRes());
         });
         sequencer.reset (bank.current.load(), bank.editGeneration.load());
+        controlSlot = -1;
         bank.playing.store (false);
     }
     bool acceptsMidi() const override { return true; }
@@ -348,7 +404,17 @@ public:
         return seqtrak::object ({ {"format", "seqtrak-editor-bank"}, {"version", 1}, {"slots", slots},
             {"current", bank.current.load()}, {"quantize", bank.quantize.load()}, {"sounds", bank.soundMode.load()},
             {"mirror", bank.mirror.load()}, {"sendProgram", bank.sendProgram.load()},
-            {"follow", bank.follow.load()}, {"tempo", bank.tempo.load()} });
+            {"follow", bank.follow.load()}, {"tempo", bank.tempo.load()},
+            {"hardwareMode", bank.hardwareMode.load()}, {"sendTempo", bank.sendTempo.load()},
+            {"hardwareFollow", bank.hardwareFollow.load()}, {"recordQuantize", bank.recordQuantize.load()},
+            {"trackModes", trackModesData()} });
+    }
+
+    var trackModesData() const
+    {
+        Array<var> modes;
+        for (const auto& mode : bank.trackModes) modes.add (mode.load());
+        return modes;
     }
 
     bool loadBank (const var& data, bool restore)
@@ -370,7 +436,15 @@ public:
         {
             bank.quantize.store (jlimit (0, 2, int (data["quantize"])));
             bank.soundMode.store (jlimit (0, 2, int (data["sounds"])));
-            bank.tempo.store (jlimit (20, 300, int (data["tempo"])));
+            bank.tempo.store (jlimit (5, 300, int (data["tempo"])));
+            bank.hardwareMode.store (bool (data["hardwareMode"]));
+            bank.sendTempo.store (bool (data["sendTempo"]));
+            bank.hardwareFollow.store (data["hardwareFollow"].isVoid() || bool (data["hardwareFollow"]));
+            bank.recordQuantize.store (seqtrak::integer (data["recordQuantize"], 0, 5) ? int (data["recordQuantize"]) : -1);
+            const auto* modes = data["trackModes"].getArray();
+            for (int t = 0; t < 11; ++t)
+                bank.trackModes[size_t (t)].store (modes != nullptr && modes->size() == 11
+                    && seqtrak::integer ((*modes)[t], 0, 2) ? int ((*modes)[t]) : 0);
             bank.mirror.store (bool (data["mirror"]));
             bank.sendProgram.store (bool (data["sendProgram"]));
             bank.follow.store (bool (data["follow"]));
@@ -393,8 +467,92 @@ public:
         add ("fxlevel", "FX Level", 77);
         add ("highpass", "High Pass", 25);
         add ("repeat", "Repeater", 0);
+        for (int t = 0; t < tracks.size(); ++t)
+        {
+            result.add (std::make_unique<AudioParameterInt> (ParameterID { "hwPattern" + String (t), 2 },
+                "Pattern " + tracks[t], 1, 6, 1));
+            result.add (std::make_unique<AudioParameterBool> (ParameterID { "hwMute" + String (t), 2 },
+                "Mute " + tracks[t], false));
+        }
         return result;
     }
+
+    void renderHardwareControls (int slot, int first, int end, seqtrak::Clock clock,
+                                 double increment, double blockTime, double tolerance, bool regrid)
+    {
+        const bool slotChanged = controlSlot != slot;
+        controlSlot = slot;
+        const auto& stored = audioSequences[size_t (slot)].hardware;
+        const auto start = clock.ppq + first * increment;
+        for (int t = 0; t < 11; ++t)
+        {
+            const auto i = size_t (t);
+            auto& control = trackControls[i];
+            const bool enabled = seqtrak::usesHardware (bank, t);
+            const int hostPattern = int (patternParameters[i]->load()) - 1;
+            const bool hostMute = muteParameters[i]->load() >= 0.5f;
+            const bool initial = control.hostPattern < 0;
+            const bool changedPattern = !initial && hostPattern != control.hostPattern;
+            const bool changedMute = !initial && hostMute != control.hostMute;
+            control.hostPattern = hostPattern;
+            control.hostMute = hostMute;
+            if (!enabled)
+            {
+                control.enabled = false;
+                control.pending = false;
+                bank.displayedPatterns[i].store (-1);
+                bank.displayedMutes[i].store (false);
+                continue;
+            }
+            const bool editedPattern = stored[i].pattern != control.stored.pattern;
+            const bool editedMute = stored[i].muted != control.stored.muted;
+            const bool edited = editedPattern || editedMute;
+            if (slotChanged || !control.enabled || editedPattern) control.desired.pattern = stored[i].pattern;
+            if (slotChanged || !control.enabled || editedMute) control.desired.muted = stored[i].muted;
+            control.stored = stored[i];
+            if (changedPattern || (initial && hostPattern != 0)) control.desired.pattern = hostPattern;
+            if (changedMute || (initial && hostMute)) control.desired.muted = hostMute;
+
+            if (slotChanged || !control.enabled || edited || changedPattern || changedMute || initial)
+            {
+                control.pending = true;
+                control.at = slotChanged ? start : seqtrak::Sequencer::quantized (bank, clock, start, tolerance);
+            }
+            else if (control.pending && regrid)
+                control.at = seqtrak::Sequencer::quantized (bank, clock, start, tolerance);
+
+            const bool force = slotChanged || !control.enabled || control.force;
+            control.enabled = true;
+            control.force = force;
+            if (!control.pending) continue;
+            const int sample = clock.playing
+                ? seqtrak::Sequencer::sampleFor (control.at, clock.ppq, increment, end) : first;
+            if (sample >= end) continue;
+            const double time = blockTime + jmax (sample, first) * 1000.0 / sampleRate;
+            if (force || control.sent.pattern != control.desired.pattern)
+                hardware.scheduleControl ({ 0x30, 0x50 + t, 0x0f }, control.desired.pattern, 1, time);
+            if (force || control.sent.muted != control.desired.muted)
+                hardware.scheduleControl ({ 0x30, 0x50 + t, 0x29 }, control.desired.muted ? 0x7d : 0, 1, time);
+            control.sent = control.desired;
+            bank.displayedPatterns[i].store (control.sent.pattern);
+            bank.displayedMutes[i].store (control.sent.muted);
+            control.pending = control.force = false;
+        }
+    }
+
+    struct TrackControl
+    {
+        seqtrak::HardwareTrack stored, desired, sent;
+        int hostPattern = -1;
+        bool hostMute = false, pending = false, enabled = false, force = false;
+        double at = 0;
+    };
+    std::array<TrackControl, 11> trackControls {};
+    std::array<std::atomic<float>*, 11> patternParameters {}, muteParameters {};
+    int controlSlot = -1, sentTempo = -1, sentRecordQuantize = -1, controlTiming = -1;
+    unsigned controlEpoch = 0, controlGeneration = 0;
+    bool controlWasPlaying = false;
+    double controlExpected = 0;
 
     AudioProcessorValueTreeState state;
     seqtrak::Bank bank;
@@ -463,7 +621,8 @@ public:
     void paint (Graphics& g) override;
     void mouseDown (const MouseEvent&) override;
     void mouseUp (const MouseEvent&) override;
-    int heldPad = -1;
+    int heldPad = -1, flashedPad = -1;
+    double padFlashUntil = 0;
     unsigned padPress = 0;
     void closeDrawer()
     {
@@ -769,7 +928,7 @@ void Panel::makeMain()
             else
             {
                 if (processor.wrapperType == AudioProcessor::wrapperType_Standalone)
-                    processor.bank.tempo.store (jlimit (20, 300, processor.bank.tempo.load() + (i == 2 ? 1 : -1)));
+                    processor.bank.tempo.store (jlimit (5, 300, processor.bank.tempo.load() + (i == 2 ? 1 : -1)));
                 repaint();
             }
         });
@@ -823,7 +982,10 @@ void Panel::paint (Graphics& g)
         const int row = i < 8 ? i / 4 : (i - 8) / 2;
         for (int j = 0; j < 3; ++j)
         {
-            const bool lit = i == 0 ? false : j == 0 ? i == track + 1 : mix[size_t (i - 1)][size_t (j - 1)];
+            const bool lit = i == 0 ? false : j == 0 ? i == track + 1
+                : seqtrak::usesHardware (processor.bank, i - 1)
+                    ? j == 1 && processor.bank.displayedMutes[size_t (i - 1)].load()
+                    : mix[size_t (i - 1)][size_t (j - 1)];
             g.setColour (lit ? (j == 0 ? Colours::white : j == 1 ? amber : green) : Colour (0xff939a9e));
             g.fillEllipse (float (166 + column * 133), float (75 + row * 100 + j * 13), 6.0f, 6.0f);
         }
@@ -873,7 +1035,15 @@ void Panel::paint (Graphics& g)
         0b111100111101111, 0b111001001001001, 0b111101111101111,
         0b111101111001111, 0b110101110100100
     };
-    const auto top = "P" + String (pattern + 1).paddedLeft ('0', 2);
+    const bool hardwareTrack = seqtrak::usesHardware (processor.bank, track);
+    int hardwarePattern = processor.bank.displayedPatterns[size_t (track)].load();
+    if (hardwareTrack && hardwarePattern < 0)
+    {
+        const std::lock_guard<std::mutex> guard (processor.bank.lock);
+        hardwarePattern = processor.bank.slots[size_t (pattern)].sequence.hardware[size_t (track)].pattern;
+    }
+    const auto top = hardwareTrack ? "P" + String (hardwarePattern + 1)
+                                   : "P" + String (pattern + 1).paddedLeft ('0', 2);
     const auto bottom = readout.isEmpty() ? (number == 0 ? String() : String (number)) : readout.fromLastOccurrenceOf (" ", false, false);
     for (int y = 0; y < 12; ++y)
         for (int x = 0; x < 20; ++x)
@@ -897,6 +1067,13 @@ void Panel::paint (Graphics& g)
     text (cream, (number == 0 ? String ("--") : "#" + String (number)) + "  /  PATTERN " + String (pattern + 1) + "  /  " + tracks[track],
           { 1171, 164, 171, 17 }, 10);
 
+    if (flashedPad >= 0 && Time::getMillisecondCounterHiRes() < padFlashUntil)
+        for (int pad = 0; pad < 7; ++pad)
+        {
+            g.setColour (pad == flashedPad ? cream : darkOrange);
+            g.fillEllipse (float (1174 + pad * 24), 186.0f, 8.0f, 8.0f);
+        }
+
     for (int row = 0; row < 2; ++row)
         for (int i = 0; i < 16; ++i)
         {
@@ -905,7 +1082,7 @@ void Panel::paint (Graphics& g)
             fill (row == 0 ? grey : inset, { x, y + 6, 46, 46 });
             g.setColour (Colour (0xff62686a));
             g.fillRoundedRectangle (float (x + 9), float (y + 25), 28.0f, 4.0f, 2.0f);
-            if (step.on || (playing && page * 16 + i == head))
+            if ((!hardwareTrack && step.on) || (playing && page * 16 + i == head))
             {
                 const auto lit = playing && page * 16 + i == head ? Colours::white : track < 7 ? green : purple;
                 g.setColour (lit.withAlpha (0.23f));
@@ -1477,7 +1654,11 @@ void Panel::pullPattern()
 void Panel::publishSequence()
 {
     const std::lock_guard<std::mutex> guard (processor.bank.lock);
-    processor.bank.slots[size_t (pattern)].sequence = { grid, lengths, mix, swing };
+    auto& sequence = processor.bank.slots[size_t (pattern)].sequence;
+    sequence.grid = grid;
+    sequence.lengths = lengths;
+    sequence.mix = mix;
+    sequence.swing = swing;
     processor.bank.sequenceRevision.fetch_add (1);
 }
 
@@ -1591,7 +1772,38 @@ void Panel::patternDrawer()
                 String (exporting ? "EXPORT " : "IMPORT ") + (whole ? "BANK" : "SLOT"),
                 [this, whole, exporting] { choosePatternFile (whole, exporting); });
     }
-    label (panel, { 16, 316, 493, 27 }, patternStatus, darkOrange);
+    label (panel, { 16, 311, 125, 16 }, "SEQUENCER MODE", darkOrange);
+    label (panel, { 147, 311, 135, 16 }, "TRACK OVERRIDE", darkOrange);
+    label (panel, { 287, 311, 112, 16 }, "SEQTRAK PATTERN", darkOrange);
+    auto& mode = combo (panel, { 16, 329, 125, 24 }, { "PLUGIN", "HARDWARE" }, int (bank.hardwareMode.load()));
+    mode.onChange = [this, &mode] { processor.bank.hardwareMode.store (mode.getSelectedItemIndex() == 1); repaint(); };
+    auto& route = combo (panel, { 147, 329, 134, 24 }, { "Follow mode", "PLUGIN", "HARDWARE" },
+                         bank.trackModes[size_t (track)].load());
+    route.onChange = [this, &route] { processor.bank.trackModes[size_t (track)].store (jmax (0, route.getSelectedItemIndex())); repaint(); };
+    seqtrak::HardwareTrack hardwareTrack;
+    {
+        const std::lock_guard<std::mutex> guard (bank.lock);
+        hardwareTrack = bank.slots[size_t (slotTarget)].sequence.hardware[size_t (track)];
+    }
+    auto& hwPattern = combo (panel, { 287, 329, 105, 24 }, { "1", "2", "3", "4", "5", "6" }, hardwareTrack.pattern);
+    hwPattern.onChange = [this, &hwPattern]
+    {
+        auto& b = processor.bank;
+        const std::lock_guard<std::mutex> guard (b.lock);
+        b.slots[size_t (slotTarget)].sequence.hardware[size_t (track)].pattern = jmax (0, hwPattern.getSelectedItemIndex());
+        b.sequenceRevision.fetch_add (1);
+    };
+    auto& hwMute = button (panel, { 400, 329, 109, 24 }, "HW MUTE", [this]
+    {
+        auto& b = processor.bank;
+        const std::lock_guard<std::mutex> guard (b.lock);
+        auto& muted = b.slots[size_t (slotTarget)].sequence.hardware[size_t (track)].muted;
+        muted = !muted;
+        b.sequenceRevision.fetch_add (1);
+    });
+    hwMute.setClickingTogglesState (true);
+    hwMute.setToggleState (hardwareTrack.muted, dontSendNotification);
+    label (panel, { 16, 354, 493, 22 }, patternStatus, darkOrange);
 }
 
 void Panel::choosePatternFile (bool whole, bool exporting)
@@ -1845,7 +2057,21 @@ void Panel::connectionDrawer()
         auto& completed = make<Label> (panel, { 16, 269, 493 * hw.progress() / 11, 7 });
         completed.setColour (Label::backgroundColourId, cream);
     }
-    label (panel, { 16, 284, 493, 73 }, hw.summary, darkOrange).setJustificationType (Justification::topLeft);
+    label (panel, { 16, 278, 493, 43 }, hw.summary, darkOrange).setJustificationType (Justification::topLeft);
+    auto& b = processor.bank;
+    auto& tempo = button (panel, { 16, 323, 172, 25 }, "SEND TEMPO TO SEQTRAK",
+        [this] { processor.bank.sendTempo.store (!processor.bank.sendTempo.load()); });
+    tempo.setClickingTogglesState (true);
+    tempo.setToggleState (b.sendTempo.load(), dontSendNotification);
+    auto& follow = button (panel, { 194, 323, 131, 25 }, "HARDWARE FOLLOW",
+        [this] { processor.bank.hardwareFollow.store (!processor.bank.hardwareFollow.load()); });
+    follow.setClickingTogglesState (true);
+    follow.setToggleState (b.hardwareFollow.load(), dontSendNotification);
+    label (panel, { 332, 305, 176, 16 }, "RECORD QUANTIZE", darkOrange);
+    auto& record = combo (panel, { 332, 323, 177, 25 },
+                          { "Leave unchanged", "Off", "1/32", "1/16T", "1/16", "1/8T", "1/8" },
+                          b.recordQuantize.load() + 1);
+    record.onChange = [this, &record] { processor.bank.recordQuantize.store (record.getSelectedItemIndex() - 1); };
 }
 
 void Panel::syncHardware()
@@ -1908,6 +2134,28 @@ void Panel::timerCallback()
         repaint();
         if (drawer >= 0) showDrawer (drawer, false);
     }
+    const int selected = bank.selectedTrack.exchange (-1);
+    const int hit = bank.samplerPad.exchange (-1);
+    if (bank.hardwareFollow.load() && hit >= 0)
+    {
+        flashedPad = hit;
+        padFlashUntil = Time::getMillisecondCounterHiRes() + 250.0;
+    }
+    if (flashedPad >= 0 && (!bank.hardwareFollow.load() || Time::getMillisecondCounterHiRes() >= padFlashUntil))
+        flashedPad = -1;
+    if (bank.hardwareFollow.load() && selected >= 0 && selected != track)
+    {
+        if (comparing) toggleCompare();
+        track = selected;
+        voicePart = 0;
+        fxFollowHardware = true;
+        processor.hardware.selectTrack (track);
+        if (lengthButton != nullptr) lengthButton->setButtonText ("LENGTH " + String (lengths[size_t (track)]));
+        refresh();
+        if (drawer >= 0) showDrawer (drawer, false);
+    }
+    repaint (33, 35, 807, 208);
+    repaint (1169, 38, 180, 159);
     bpm = roundToInt (bank.displayTempo.load());
     playing = bank.playing.load();
     head = bank.heads[size_t (track)].load();

@@ -17,11 +17,18 @@ struct Step
 using Grid = std::array<std::array<std::array<Step, 16>, 8>, 11>;
 using Mix = std::array<std::array<bool, 2>, 11>;
 
+struct HardwareTrack
+{
+    int pattern = 0;
+    bool muted = false;
+};
+
 struct Sequence
 {
     Grid grid {};
     std::array<int, 11> lengths { 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
     Mix mix {};
+    std::array<HardwareTrack, 11> hardware {};
     int swing = 50;
 
     const Step& step (int track, int index) const
@@ -52,6 +59,12 @@ struct Bank
     std::array<Pattern, 16> slots;
     std::atomic<int> current { 0 }, requested { -1 }, hardwareProgram { -1 }, quantize { 0 }, soundMode { 0 };
     std::atomic<bool> mirror { true }, sendProgram { false }, follow { true }, standalonePlay { false };
+    std::atomic<bool> hardwareMode { false }, sendTempo { false }, hardwareFollow { true };
+    // 0 follows the mode switch, 1 forces plug-in notes, 2 forces hardware.
+    std::array<std::atomic<int>, 11> trackModes {};
+    std::atomic<int> recordQuantize { -1 }, selectedTrack { -1 }, samplerPad { -1 };
+    std::array<std::atomic<int>, 11> displayedPatterns {};
+    std::array<std::atomic<bool>, 11> displayedMutes {};
     std::atomic<int> tempo { 124 };
     std::atomic<float> displayTempo { 124 };
     std::atomic<bool> playing { false };
@@ -61,12 +74,21 @@ struct Bank
     Bank()
     {
         for (int i = 0; i < 16; ++i) slots[size_t (i)].name = "Pattern " + String (i + 1);
+        for (auto& mode : trackModes) mode.store (0);
+        for (auto& mute : displayedMutes) mute.store (false);
+        for (auto& pattern : displayedPatterns) pattern.store (-1);
         for (auto& head : heads) head.store (-1);
         for (int t = 0; t < 11; ++t)
             for (int s = 0; s < 16; ++s)
                 slots[0].sequence.grid[size_t (t)][0][size_t (s)].on = (s + t) % (t == 3 || t == 4 ? 2 : 4) == 0;
     }
 };
+
+inline bool usesHardware (const Bank& bank, int track)
+{
+    const int mode = bank.trackModes[size_t (track)].load();
+    return mode == 2 || (mode == 0 && bank.hardwareMode.load());
+}
 
 struct Clock
 {
@@ -96,12 +118,14 @@ public:
             stopNote (t, sample, emit);
     }
 
-    template <typename Emit, typename Changed, typename Cancel>
+    template <typename Emit, typename Changed, typename Cancel, typename HardwareRange>
     void render (Bank& bank, const std::array<Sequence, 16>& sequences, Clock clock, int samples,
-                 double rate, const MidiBuffer& input, int command, bool fromUI, Emit&& emit, Changed&& changed, Cancel&& cancel)
+                 double rate, const MidiBuffer& input, int command, bool fromUI, Emit&& emit, Changed&& changed, Cancel&& cancel, HardwareRange&& hardwareRange)
     {
         const double ppqPerSample = clock.bpm / (60.0 * rate);
         if (samples <= 0 || ppqPerSample <= 0 || !std::isfinite (clock.ppq)) return;
+        for (int t = 0; t < 11; ++t)
+            if (usesHardware (bank, t)) stopNote (t, 0, emit);
         const bool mirror = bank.mirror.load();
         if (mirrorWasOn && !mirror)
             for (int t = 0; t < 11; ++t)
@@ -152,11 +176,12 @@ public:
         int cursor = 0;
         const auto playRange = [&] (int first, int limit)
         {
+            if (first < limit) hardwareRange (slot, first, limit, tolerance);
             const int chunk = jmax (1, int (jmin (double (samples), 16.0 / ppqPerSample)));
             while (first < limit)
             {
                 const int end = first + jmin (chunk, limit - first);
-                play (sequences[size_t (slot)], clock, ppqPerSample, first, end, mirror, emit);
+                play (bank, sequences[size_t (slot)], clock, ppqPerSample, first, end, mirror, emit);
                 first = end;
             }
         };
@@ -200,7 +225,7 @@ public:
         {
             const auto end = clock.ppq + (samples - 1) * ppqPerSample;
             const auto step = int64 (std::floor ((end - phase) * 4.0 + 1.0e-9));
-            bank.heads[size_t (t)].store (clock.playing && end >= jmax (launch, patternStart)
+            bank.heads[size_t (t)].store (!usesHardware (bank, t) && clock.playing && end >= jmax (launch, patternStart)
                 ? wrapped (step, sequence.lengths[size_t (t)]) : -1);
         }
     }
@@ -221,6 +246,7 @@ private:
         return origin + std::ceil ((ppq - origin - tolerance) / length) * length;
     }
 
+public:
     static double quantized (const Bank& bank, Clock clock, double ppq, double tolerance)
     {
         if (!clock.playing || bank.quantize.load() == 0) return ppq;
@@ -236,6 +262,7 @@ private:
         return int (std::floor (sample + 0.5));
     }
 
+private:
     static bool chance (int probability, int64 step, int track, int slot)
     {
         if (probability == 100) return true;
@@ -255,7 +282,7 @@ private:
     }
 
     template <typename Emit>
-    void play (const Sequence& seq, Clock clock, double increment, int first, int end, bool mirror, Emit& emit)
+    void play (const Bank& bank, const Sequence& seq, Clock clock, double increment, int first, int end, bool mirror, Emit& emit)
     {
         if (!clock.playing || first >= end) return;
         const auto startPpq = clock.ppq + first * increment;
@@ -264,12 +291,13 @@ private:
         const auto firstGrid = int64 (std::floor ((startPpq - phase) * 4.0)) - 1;
         const auto lastGrid = int64 (std::ceil ((endPpq - phase) * 4.0)) + 1;
         bool solo = false;
-        for (const auto& mix : seq.mix) solo |= mix[1];
+        for (int t = 0; t < 11; ++t)
+            if (!usesHardware (bank, t)) solo |= seq.mix[size_t (t)][1];
         for (int t = 0; t < 11; ++t)
         {
             auto& note = notes[size_t (t)];
             const auto mix = seq.mix[size_t (t)];
-            if (mix[0] || (solo && !mix[1]))
+            if (usesHardware (bank, t) || mix[0] || (solo && !mix[1]))
             {
                 stopNote (t, first, emit);
                 continue;
