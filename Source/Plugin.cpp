@@ -194,7 +194,9 @@ public:
         for (int i = 0; i != 9; ++i)
         {
             const auto yy = float (y + 6) + float (h - 12) * float (i) / 8.0f;
-            g.setColour (darkOrange.withAlpha (0.65f));
+            // Faders with fixed positions (REPEATER) draw those stripes a little darker.
+            const bool stop = s.getProperties().contains ("stops") && i % 2 == 0;
+            g.setColour (stop ? darkOrange.darker (0.45f) : darkOrange.withAlpha (0.65f));
             g.drawHorizontalLine (roundToInt (yy), cx - 19.0f, cx + 19.0f);
         }
         g.setColour (cream);
@@ -1192,6 +1194,7 @@ void Panel::makeMain()
     {
         // REPEATER has 5 positions on SEQTRAK: the fader snaps to them for easy mouse editing.
         auto& repeater = hostKnob ({ 1261, 227, 94, 134 }, "repeat", "Repeater", true, Slider::LinearVertical);
+        repeater.getProperties().set ("stops", true);
         auto previous = repeater.onValueChange;
         repeater.onValueChange = [&repeater, previous]
         {
