@@ -70,8 +70,8 @@ String helpFor (const String& text)
         { "FOLLOW", "When on (orange), the pads follow the playing page. Turn off to edit one page while it plays." },
         { "VOL+", "Raise the selected track's volume." }, { "VOL-", "Lower the selected track's volume." },
         { "DELETE", "Clear all steps of the selected track." },
-        { "MUTE", "Mute the selected track in the plugin sequencer." },
-        { "SOLO", "Solo the selected track in the plugin sequencer." },
+        { "MUTE", "Mute the selected track (editor sequencer and SEQTRAK)." },
+        { "SOLO", "Solo the selected track (editor sequencer; SEQTRAK solos one track at a time)." },
         { "PAGE", "Next page of the track's steps (turns FOLLOW off). Or click the page numbers above the pads." },
         { "PLAY", "Start or stop the sequencer (standalone; in a DAW use the DAW transport)." },
         { "USB", "Open Connection: choose SEQTRAK's USB ports and press IDENTIFY." },
@@ -876,6 +876,20 @@ public:
     }
     bool painting = false, paintValue = false;
     TextButton* followButton = nullptr;
+    // Mirror MUTE/SOLO on SEQTRAK itself: CC 23 = mute (per track channel), CC 24 = solo (0 off, 1-11 = track).
+    void sendMixToSeqtrak (bool soloChanged)
+    {
+        auto& hw = processor.hardware;
+        if (!soloChanged)
+        {
+            hw.sendControlNow (track, 23, mix[size_t (track)][0] ? 127 : 0);
+            return;
+        }
+        // SEQTRAK solos one track at a time: the selected track if soloed, else another soloed track, else off.
+        int solo = mix[size_t (track)][1] ? track : -1;
+        for (int t = 0; t < 11 && solo < 0; ++t) if (mix[size_t (t)][1]) solo = t;
+        hw.sendControlNow (solo < 0 ? track : solo, 24, solo + 1);
+    }
     int pagesFor (int t) const { return jlimit (1, 8, (lengths[size_t (t)] + 15) / 16); }
     // Choosing a page by hand turns FOLLOW off, so the pads stay where you are editing.
     void showPage (int p)
@@ -1132,7 +1146,12 @@ void Panel::makeMain()
                 }
             }
             else if (i == 2) { grid[size_t (track)] = {}; publishSequence(); }
-            else if (i < 5) { mix[size_t (track)][size_t (i - 3)] = !mix[size_t (track)][size_t (i - 3)]; publishSequence(); }
+            else if (i < 5)
+            {
+                mix[size_t (track)][size_t (i - 3)] = !mix[size_t (track)][size_t (i - 3)];
+                publishSequence();
+                sendMixToSeqtrak (i == 4);
+            }
             else if (i == 5) { showPage ((page + 1) % pagesFor (track)); if (editedStep >= 0) closeDrawer(); }
             else
             {

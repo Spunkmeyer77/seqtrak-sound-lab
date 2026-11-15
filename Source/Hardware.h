@@ -385,6 +385,12 @@ public:
         return true;
     }
     size_t queuedMessages() const { return outbox.size(); }
+    // Control Change sent straight away (UI thread), e.g. mute/solo.
+    void sendControlNow (int channel, int controller, int value)
+    {
+        if (!verified) return;
+        transmit ({ uint8 (176 + jlimit (0, 15, channel)), uint8 (controller & 127), uint8 (jlimit (0, 127, value)) });
+    }
 private:
     void transmit (const Bytes& bytes)
     {
