@@ -82,7 +82,7 @@ String helpFor (const String& text)
         { "DEEP EDIT", "Edit every sound parameter. Double-click a fader to reset it." },
         { "TRACK FX", "Read, choose and edit the track's effect." },
         { "RANDOM", "Randomize the track's sound; lock what you want to keep." },
-        { "PATTERNS", "16 pattern slots, Program Change switching, chain, import/export." },
+        { "PATTERNS", "64 patterns in banks A-D, Program Change 0-63, chain, print, import/export." },
         { "CONNECTION", "MIDI ports, IDENTIFY, reading hardware, tempo and options." },
         { "CLOSE", "Close this drawer." }, { "SNAPS", "Save and recall voice snapshots." },
         { "CHAIN", "Pattern chain: play slots in order, each for a number of bars." },
@@ -92,7 +92,7 @@ String helpFor (const String& text)
         { "CLEAR", "Clear the selected slot (or the chain)." }, { "SWITCH", "Switch to the selected slot." },
         { "RENAME", "Rename the selected slot." },
         { "IMPORT SLOT", "Load one slot from a JSON file." }, { "EXPORT SLOT", "Save one slot as a JSON file." },
-        { "IMPORT BANK", "Load all 16 slots from a JSON file." }, { "EXPORT BANK", "Save all 16 slots as a JSON file." },
+        { "IMPORT BANK", "Load all 64 patterns from a JSON file." }, { "EXPORT BANK", "Save all 64 patterns as a JSON file." },
         { "READ HARDWARE", "Read this track's sound from SEQTRAK." },
         { "HOLD TO AUDITION", "Hold to play a test note on SEQTRAK." },
         { "LOCK", "Keep this parameter when randomizing." },
@@ -330,7 +330,7 @@ public:
             const std::unique_lock<std::mutex> guard (bank.lock, std::try_to_lock);
             if (guard.owns_lock())
             {
-                for (int i = 0; i < 16; ++i) audioSequences[size_t (i)] = bank.slots[size_t (i)].sequence;
+                for (int i = 0; i < seqtrak::slotCount; ++i) audioSequences[size_t (i)] = bank.slots[size_t (i)].sequence;
                 audioRevision = bank.sequenceRevision.load();
             }
             else if (audioRevision == 0 || audioGeneration != bank.editGeneration.load())
@@ -463,10 +463,10 @@ public:
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0; }
-    int getNumPrograms() override { return 16; }
+    int getNumPrograms() override { return seqtrak::slotCount; }
     int getCurrentProgram() override { return bank.current.load(); }
-    void setCurrentProgram (int index) override { if (isPositiveAndBelow (index, 16)) bank.hardwareProgram.store (index); }
-    const String getProgramName (int index) override { return "Pattern " + String (index + 1); }
+    void setCurrentProgram (int index) override { if (isPositiveAndBelow (index, seqtrak::slotCount)) bank.hardwareProgram.store (index); }
+    const String getProgramName (int index) override { return "Pattern " + seqtrak::slotLabel (index); }
     void changeProgramName (int, const String&) override {}
     bool hasEditor() const override { return true; }
     AudioProcessorEditor* createEditor() override;
@@ -526,9 +526,12 @@ public:
     {
         const auto* slots = data["slots"].getArray();
         if (data["format"].toString() != "seqtrak-editor-bank" || !seqtrak::integer (data["version"], 1, 1)
-            || slots == nullptr || slots->size() != 16 || !seqtrak::integer (data["current"], 0, 15)) return false;
-        auto fresh = std::make_unique<std::array<seqtrak::Pattern, 16>>();
-        for (int i = 0; i < 16; ++i)
+            || slots == nullptr || (slots->size() != 16 && slots->size() != seqtrak::slotCount)
+            || !seqtrak::integer (data["current"], 0, slots->size() - 1)) return false;
+        // Older projects hold 16 slots: they load into bank A, banks B-D start empty.
+        auto fresh = std::make_unique<std::array<seqtrak::Pattern, seqtrak::slotCount>>();
+        for (int i = 0; i < seqtrak::slotCount; ++i) (*fresh)[size_t (i)].name = "Pattern " + seqtrak::slotLabel (i);
+        for (int i = 0; i < slots->size(); ++i)
             if (!seqtrak::decodePattern ((*slots)[i], (*fresh)[size_t (i)], voiceSchema, hardware)) return false;
         const std::lock_guard<std::mutex> guard (bank.lock);
         bank.slots = std::move (*fresh);
@@ -558,7 +561,7 @@ public:
             {
                 const bool valid = chain != nullptr && i < chain->size() && (*chain)[i].isArray()
                                    && (*chain)[i].getArray()->size() == 2
-                                   && seqtrak::integer ((*chain)[i][0], -1, 15) && seqtrak::integer ((*chain)[i][1], 1, 64);
+                                   && seqtrak::integer ((*chain)[i][0], -1, seqtrak::slotCount - 1) && seqtrak::integer ((*chain)[i][1], 1, 64);
                 bank.chainSlots[size_t (i)].store (valid ? int ((*chain)[i][0]) : -1);
                 bank.chainBars[size_t (i)].store (valid ? int ((*chain)[i][1]) : 1);
             }
@@ -685,7 +688,7 @@ public:
     int runChain (const seqtrak::Clock& clock, double blockLength)
     {
         int entries = 0;
-        while (entries < seqtrak::Bank::chainSize && isPositiveAndBelow (bank.chainSlots[size_t (entries)].load(), 16)) ++entries;
+        while (entries < seqtrak::Bank::chainSize && isPositiveAndBelow (bank.chainSlots[size_t (entries)].load(), seqtrak::slotCount)) ++entries;
         if (!bank.chainOn.load() || !clock.playing || entries == 0 || clock.barLength <= 0)
         {
             chainWasRunning = false;
@@ -794,7 +797,7 @@ public:
     seqtrak::Hardware hardware;
     const var voiceSchema;
     seqtrak::Sequencer sequencer;
-    std::array<seqtrak::Sequence, 16> audioSequences {};
+    std::array<seqtrak::Sequence, seqtrak::slotCount> audioSequences {};
     MidiBuffer generated;
     double sampleRate = 0, standalonePpq = 0;
     unsigned audioGeneration = 0, audioRevision = 0;
@@ -1011,7 +1014,7 @@ private:
     void printDrawer();
     void printToSeqtrak();
     Label* printStatus = nullptr;
-    int printSource = -1, printDest = 0;
+    int printSource = -1, printDest = 0, bankView = 0;
     std::array<bool, 11> printTracks { true, true, true, true, true, true, true, true, true, true, true };
     void updateChainStatus();
     Label* chainStatus = nullptr;
@@ -1358,7 +1361,7 @@ void Panel::paint (Graphics& g)
         hardwarePattern = processor.bank.slots[size_t (pattern)].sequence.hardware[size_t (track)].pattern;
     }
     const auto top = hardwareTrack ? "P" + String (hardwarePattern + 1)
-                                   : "P" + String (pattern + 1).paddedLeft ('0', 2);
+                                   : seqtrak::slotLabel (pattern);
     const auto bottom = readout.isEmpty() ? (number == 0 ? String() : String (number)) : readout.fromLastOccurrenceOf (" ", false, false);
     for (int y = 0; y < 12; ++y)
         for (int x = 0; x < 20; ++x)
@@ -1379,7 +1382,7 @@ void Panel::paint (Graphics& g)
             g.fillEllipse (float (1171 + x * 9), float (42 + y * 8), 5.0f, 5.0f);
         }
     text (cream, readout.isEmpty() ? name.toUpperCase() : readout, { 1171, 143, 171, 21 }, 14);
-    text (cream, (number == 0 ? String ("--") : "#" + String (number)) + "  /  PATTERN " + String (pattern + 1) + "  /  " + tracks[track],
+    text (cream, (number == 0 ? String ("--") : "#" + String (number)) + "  /  PATTERN " + seqtrak::slotLabel (pattern) + "  /  " + tracks[track],
           { 1171, 164, 171, 17 }, 10);
 
     if (flashedPad >= 0 && Time::getMillisecondCounterHiRes() < padFlashUntil)
@@ -2067,21 +2070,30 @@ void Panel::patternDrawer()
         const std::lock_guard<std::mutex> guard (bank.lock);
         for (const auto& slot : bank.slots) names.add (slot.name);
     }
-    label (panel, { 16, 45, 493, 23 }, "ACTIVE SLOT " + String (pattern + 1) + "  /  " + names[pattern], darkOrange);
+    label (panel, { 16, 45, 290, 23 }, "ACTIVE " + seqtrak::slotLabel (pattern) + "  /  " + names[pattern], darkOrange);
+    for (int b = 0; b < 4; ++b)
+    {
+        auto& bankButton = button (panel, { 309 + b * 50, 44, 46, 24 }, String::charToString (juce_wchar ('A' + b)),
+                                   [this, b] { bankView = b; showDrawer (4, false); });
+        bankButton.setToggleState (b == bankView, dontSendNotification);
+        bankButton.setTooltip ("Show bank " + String::charToString (juce_wchar ('A' + b)) + " (slots "
+                               + seqtrak::slotLabel (b * 16) + "-" + seqtrak::slotLabel (b * 16 + 15) + ", Program Change "
+                               + String (b * 16) + "-" + String (b * 16 + 15) + ")");
+    }
     auto& chainButton = button (panel, { 240, 12, 66, 24 }, "CHAIN", [this] { showDrawer (7, false); });
     chainButton.setToggleState (bank.chainOn.load(), dontSendNotification);
     chainButton.setTooltip ("Pattern chain: play slots in order, each for a number of bars");
-    for (int i = 0; i < 16; ++i)
+    for (int k = 0; k < 16; ++k)
     {
-        auto& b = button (panel, { 16 + (i % 8) * 62, 72 + (i / 8) * 40, 56, 34 },
-                          String (i + 1).paddedLeft ('0', 2),
+        const int i = bankView * 16 + k;
+        auto& b = button (panel, { 16 + (k % 8) * 62, 72 + (k / 8) * 40, 56, 34 }, seqtrak::slotLabel (i),
                           [this, i]
                           {
                               slotTarget = i;
                               processor.bank.requested.store (i);
                               showDrawer (4, false);
                           });
-        b.setTooltip (names[i]);
+        b.setTooltip (names[i] + "  (Program Change " + String (i) + ")");
         b.setToggleState (i == pattern, dontSendNotification);
     }
     auto& target = combo (panel, { 16, 154, 182, 25 }, names, slotTarget);
@@ -2373,7 +2385,7 @@ void Panel::chainDrawer()
     StringArray names;
     {
         const std::lock_guard<std::mutex> guard (bank.lock);
-        for (int i = 0; i < 16; ++i) names.add (String (i + 1).paddedLeft ('0', 2) + "  " + bank.slots[size_t (i)].name);
+        for (int i = 0; i < seqtrak::slotCount; ++i) names.add (seqtrak::slotLabel (i) + "  " + bank.slots[size_t (i)].name);
     }
     slots.addArray (names);
     for (int b = 1; b <= 64; ++b) bars.add (String (b) + (b == 1 ? " bar" : " bars"));
@@ -2402,7 +2414,7 @@ void Panel::printDrawer()
     StringArray names;
     {
         const std::lock_guard<std::mutex> guard (bank.lock);
-        for (int i = 0; i < 16; ++i) names.add (String (i + 1).paddedLeft ('0', 2) + "  " + bank.slots[size_t (i)].name);
+        for (int i = 0; i < seqtrak::slotCount; ++i) names.add (seqtrak::slotLabel (i) + "  " + bank.slots[size_t (i)].name);
     }
     label (panel, { 16, 44, 493, 20 }, "Writes a slot into one of SEQTRAK's own patterns, so it plays without the computer.", darkOrange);
     label (panel, { 16, 72, 110, 26 }, "FROM SLOT", darkOrange);
@@ -2450,7 +2462,7 @@ void Panel::printToSeqtrak()
     seqtrak::Sequence seq;
     {
         const std::lock_guard<std::mutex> guard (processor.bank.lock);
-        seq = processor.bank.slots[size_t (jlimit (0, 15, printSource))].sequence;
+        seq = processor.bank.slots[size_t (jlimit (0, seqtrak::slotCount - 1, printSource))].sequence;
     }
     const int dest = jlimit (0, 5, printDest);
     int notesWritten = 0;
@@ -2498,7 +2510,7 @@ void Panel::updateChainStatus()
                 : !bank.chainOn.load() ? String (entries) + " steps. Turn CHAIN ON and start playback."
                 : position < 0 ? String (entries) + " steps. Starts with step 1 when playback starts."
                 : "PLAYING STEP " + String (position + 1) + " OF " + String (entries) + "  /  SLOT "
-                    + String (bank.chainSlots[size_t (position)].load() + 1).paddedLeft ('0', 2);
+                    + seqtrak::slotLabel (bank.chainSlots[size_t (position)].load());
     chainStatus->setText (text, dontSendNotification);
     for (int i = 0; i < seqtrak::Bank::chainSize; ++i)
         if (auto* n = chainNumbers[size_t (i)])
@@ -2695,6 +2707,7 @@ void Panel::timerCallback()
         comparing = false;
         captured = {}; undo = {}; beforeCompare = {};
         pullPattern();
+        bankView = pattern / 16;   // keep the Patterns drawer on the playing bank
         repaint();
         if (drawer >= 0) showDrawer (drawer, false);
     }

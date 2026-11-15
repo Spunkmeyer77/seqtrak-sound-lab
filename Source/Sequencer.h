@@ -40,6 +40,13 @@ inline int stepNotes (const Step& step, std::array<int, 5>& out)
 }
 
 using Grid = std::array<std::array<std::array<Step, 16>, 8>, 11>;
+
+// 4 banks (A-D) x 16 slots = 64 patterns.
+constexpr int slotCount = 64;
+inline String slotLabel (int slot)
+{
+    return String::charToString (juce_wchar ('A' + slot / 16)) + String (slot % 16 + 1).paddedLeft ('0', 2);
+}
 using Mix = std::array<std::array<bool, 2>, 11>;
 
 struct HardwareTrack
@@ -81,7 +88,7 @@ struct Pattern
 struct Bank
 {
     std::mutex lock;
-    std::array<Pattern, 16> slots;
+    std::array<Pattern, slotCount> slots;
     std::atomic<int> current { 0 }, requested { -1 }, hardwareProgram { -1 }, quantize { 0 }, soundMode { 0 };
     std::atomic<bool> mirror { true }, sendProgram { false }, follow { true }, standalonePlay { false };
     std::atomic<bool> hardwareMode { false }, sendTempo { false }, hardwareFollow { true };
@@ -96,7 +103,7 @@ struct Bank
     std::array<std::atomic<int>, 11> heads {};
     std::atomic<unsigned> switched { 0 }, editGeneration { 0 }, restored { 0 }, sequenceRevision { 1 };
 
-    // Pattern chain: up to 16 steps of (slot 0-15, bars 1-64); slot -1 ends the chain.
+    // Pattern chain: up to 16 steps of (slot 0-63, bars 1-64); slot -1 ends the chain.
     static constexpr int chainSize = 16;
     std::array<std::atomic<int>, chainSize> chainSlots {}, chainBars {};
     std::atomic<bool> chainOn { false }, chainLoop { true }, chainBarQuantize { false };
@@ -104,7 +111,7 @@ struct Bank
 
     Bank()
     {
-        for (int i = 0; i < 16; ++i) slots[size_t (i)].name = "Pattern " + String (i + 1);
+        for (int i = 0; i < slotCount; ++i) slots[size_t (i)].name = "Pattern " + slotLabel (i);
         for (auto& mode : trackModes) mode.store (0);
         for (auto& mute : displayedMutes) mute.store (false);
         for (auto& pattern : displayedPatterns) pattern.store (-1);
@@ -152,7 +159,7 @@ public:
     }
 
     template <typename Emit, typename Changed, typename Cancel, typename HardwareRange>
-    void render (Bank& bank, const std::array<Sequence, 16>& sequences, Clock clock, int samples,
+    void render (Bank& bank, const std::array<Sequence, slotCount>& sequences, Clock clock, int samples,
                  double rate, const MidiBuffer& input, int command, bool fromUI, Emit&& emit, Changed&& changed, Cancel&& cancel, HardwareRange&& hardwareRange)
     {
         const double ppqPerSample = clock.bpm / (60.0 * rate);
@@ -200,7 +207,7 @@ public:
 
         const auto requestSlot = [&] (int value, bool ui, int sample)
         {
-            if (!isPositiveAndBelow (value, 16)) return;
+            if (!isPositiveAndBelow (value, slotCount)) return;
             pending = value;
             announce = ui && bank.sendProgram.load();
             switchAt = quantized (bank, clock, clock.ppq + sample * ppqPerSample, tolerance);
@@ -247,7 +254,7 @@ public:
         };
         for (const auto meta : input)
         {
-            if (meta.numBytes != 2 || (meta.data[0] & 0xf0) != 0xc0 || meta.data[1] >= 16) continue;
+            if (meta.numBytes != 2 || (meta.data[0] & 0xf0) != 0xc0 || meta.data[1] >= slotCount) continue;
             const auto sample = jlimit (cursor, samples - 1, meta.samplePosition);
             run (sample);
             requestSlot (meta.data[1], false, sample);

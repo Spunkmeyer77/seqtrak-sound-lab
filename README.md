@@ -1,6 +1,6 @@
 # SEQTRAK Editor
 
-**Transistor Labs · v0.4.3 · USB hardware editor and sequencer**
+**Transistor Labs · v0.5.0 · USB hardware editor and sequencer**
 
 Native JUCE/C++17 source with a CMake project. The 1400 × 420 editor offers 75%, 100%, 125%, and 150% scaling. Click a track label to select it. The track LEDs indicate selection (white), mute (amber), and solo (green). Click a top-row step to toggle it. Open the corresponding lower pad to edit velocity, MIDI note, probability, and micro timing. Velocity is visible while that step is being edited.
 

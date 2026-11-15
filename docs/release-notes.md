@@ -1,16 +1,14 @@
-SEQTRAK Editor v0.4.3 — Transistor Labs
+SEQTRAK Editor v0.5.0 — Transistor Labs
 
-- Pattern chain, flam per step, 4/4 beat marks, tighter USB note timing, lighter editor
+FIRST TIME USING PRINT TO SEQTRAK: test on a SEQTRAK pattern you don't mind losing.
 
-- Selected track name box now framed with a thin line
-
-- Fix: About opens inside the plugin window; drawers no longer jump when opened
-
-- Hardware sequencer mode: switch SEQTRAK internal patterns and mutes per track, automatable from the DAW
-- Tempo sync, record quantize and hardware follow
-- 11-track host-synced step sequencer for Yamaha SEQTRAK (per-step note, velocity, probability, micro timing, gate; swing; per-track length up to 128 steps)
-- 16-slot pattern bank switched by Program Change, with Sound Recall
-- Full USB SysEx sound editor (presets, Deep Edit, Track FX, randomizer, snapshots)
+- 64 patterns: 4 banks (A–D) x 16, Program Change 0–63
+- Print to SEQTRAK: write patterns (drums + synths, with chords) into SEQTRAK's own 6 slots
+- Step chords on Synth 1, Synth 2 and DX
+- CHORD page connected (Mode, Key, Scale)
+- HELP button with hover help (off by default)
+- Pattern chain fixed; drag-paint steps; clearer Patterns controls
+- Manual: Quick Start first connection, "More Patterns Than the Hardware"
 
 macOS 12+ (AU/VST3/Standalone, universal) · Windows 10/11 64-bit (VST3/Standalone).
 The macOS installer is not notarised: right-click → Open. See the User Manual.
