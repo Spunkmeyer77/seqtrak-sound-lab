@@ -32,6 +32,29 @@ const std::array<StringArray, 20> knobLabels {{
     {"Pattern", "Length", "Repeat", "Swing"}
 }};
 
+// MIDI Control Change for Sound Design knob `knob` in panel section `section`
+// on track `track` (0-10), from the SEQTRAK Data List CC map. -1 = no CC exists
+// (those knobs are dimmed; use Deep Edit for them).
+int quickControl (int section, int knob, int track)
+{
+    const bool drum = track < 7, synth = track >= 7 && track <= 9;
+    switch (section)
+    {
+        case 1:  if (knob == 0 && drum) return 25; if (knob == 2 && synth) return 5; return -1;   // PITCH: drum pitch, glide
+        case 2:  return knob == 0 && synth ? 26 : -1;                                             // MONO/POLY/CHORD
+        case 4:  return knob == 0 ? 10 : -1;                                                      // PAN
+        case 5:  return knob == 0 ? 7 : -1;                                                       // VOLUME
+        case 6:  return knob == 0 ? 73 : -1;                                                      // ATTACK
+        case 7:  return knob == 0 ? 75 : -1;                                                      // DECAY / RELEASE
+        case 9:  return knob == 0 ? 74 : -1;                                                      // FILTER cutoff
+        case 10: return knob == 0 ? 71 : -1;                                                      // RESONANCE
+        case 11: return knob == 0 ? 91 : -1;                                                      // REVERB send
+        case 12: return knob == 0 ? 94 : -1;                                                      // DELAY send
+        case 18: { const int mix[] { 7, 10, 91, 94 }; return mix[knob]; }                        // MIXER
+        default: return -1;
+    }
+}
+
 Font face (float size, int flags = Font::plain, float scale = 0.9f)
 {
     auto font = Font (FontOptions (size, flags));
@@ -136,8 +159,13 @@ public:
         for (int t = 0; t < 11; ++t)
         {
             patternParameters[size_t (t)] = state.getRawParameterValue ("hwPattern" + String (t));
+            volumeParameters[size_t (t)] = state.getRawParameterValue ("vol" + String (t));
             muteParameters[size_t (t)] = state.getRawParameterValue ("hwMute" + String (t));
         }
+        for (int k = 0; k < 4; ++k) quickParameters[size_t (k)] = state.getRawParameterValue ("quick" + String (k));
+        fxLevelParameter = state.getRawParameterValue ("fxlevel");
+        highPassParameter = state.getRawParameterValue ("highpass");
+        repeatParameter = state.getRawParameterValue ("repeat");
         hardware.onTrackSelected = [this] (int t) { if (bank.hardwareFollow.load()) bank.selectedTrack.store (t); };
         hardware.onSamplerPad = [this] (int pad) { if (bank.hardwareFollow.load()) bank.samplerPad.store (pad); };
         hardware.onProgramChange = [this] (int program) { bank.hardwareProgram.store (program); };
@@ -348,6 +376,7 @@ public:
             }
         }
         else sentTempo = -1;
+        sendPanelControls (blockTime);
         const int record = bank.recordQuantize.load();
         if (record >= 0 && record != sentRecordQuantize)
             hardware.scheduleControl ({ 0x00, 0x00, 0x1f }, record, 1, blockTime);
@@ -555,6 +584,58 @@ public:
     };
     std::array<TrackControl, 11> trackControls {};
     std::array<std::atomic<float>*, 11> patternParameters {}, muteParameters {};
+public:
+    // Set by the editor: which track/section the panel controls address, and the MASTER/SINGLE switch.
+    std::atomic<int> uiTrack { 0 }, uiSection { 0 };
+    std::atomic<bool> fxSingle { false };
+private:
+    std::array<std::atomic<float>*, 11> volumeParameters {};
+    std::array<std::atomic<float>*, 4> quickParameters {};
+    std::atomic<float>* fxLevelParameter = nullptr, * highPassParameter = nullptr, * repeatParameter = nullptr;
+    std::array<int, 11> sentVolume {};
+    std::array<int, 4> sentQuick {};
+    int sentFxLevel = -1, sentHighPass = -1, sentRepeat = -1;
+    bool panelPrimed = false;
+
+    // Sends panel knobs/faders to SEQTRAK as Control Change when their value changes.
+    void sendPanelControls (double time)
+    {
+        const auto value = [] (std::atomic<float>* p) { return p != nullptr ? roundToInt (p->load()) : 0; };
+        if (!panelPrimed)   // don't blast stored values at load; only send real changes
+        {
+            for (int t = 0; t < 11; ++t) sentVolume[size_t (t)] = value (volumeParameters[size_t (t)]);
+            for (int k = 0; k < 4; ++k) sentQuick[size_t (k)] = value (quickParameters[size_t (k)]);
+            sentFxLevel = value (fxLevelParameter); sentHighPass = value (highPassParameter); sentRepeat = value (repeatParameter);
+            panelPrimed = true;
+            return;
+        }
+        for (int t = 0; t < 11; ++t)
+        {
+            const int v = value (volumeParameters[size_t (t)]);
+            if (v != sentVolume[size_t (t)]) { sentVolume[size_t (t)] = v; hardware.scheduleCC (t, 7, v, time); }
+        }
+        const int track = jlimit (0, 10, uiTrack.load()), section = uiSection.load();
+        for (int k = 0; k < 4; ++k)
+        {
+            const int v = value (quickParameters[size_t (k)]);
+            if (v == sentQuick[size_t (k)]) continue;
+            sentQuick[size_t (k)] = v;
+            const int cc = quickControl (section, k, track);
+            if (cc < 0) continue;
+            hardware.scheduleCC (track, cc, cc == 26 ? jmin (2, v * 3 / 128) : v, time);
+        }
+        const int level = value (fxLevelParameter);
+        if (level != sentFxLevel)
+        {
+            sentFxLevel = level;
+            if (fxSingle.load()) hardware.scheduleCC (track, 107, level, time);   // Single Effect parameter 1
+            else hardware.scheduleCC (0, 102, level, time);                       // Master Effect 1 parameter 1
+        }
+        const int hp = value (highPassParameter);
+        if (hp != sentHighPass) { sentHighPass = hp; hardware.scheduleCC (0, 105, hp, time); }   // Master Effect 2
+        const int rep = value (repeatParameter);
+        if (rep != sentRepeat) { sentRepeat = rep; hardware.scheduleCC (0, 106, rep, time); }    // Master Effect 3
+    }
     int controlSlot = -1, sentTempo = -1, sentRecordQuantize = -1, controlTiming = -1;
     unsigned controlEpoch = 0, controlGeneration = 0;
     bool controlWasPlaying = false;
@@ -896,10 +977,22 @@ void Panel::makeMain()
         quickNames[size_t (i)]->setJustificationType (Justification::centred);
     }
 
-    hostKnob ({ 1066, 43, 74, 67 }, "fx", "FX", true);
+    {
+        // Effect-type selection has no MIDI CC; choose effects in the TRACK FX drawer.
+        auto& fxKnob = hostKnob ({ 1066, 43, 74, 67 }, "fx", "FX", true);
+        fxKnob.setAlpha (0.4f);
+        fxKnob.setEnabled (false);
+        fxKnob.setTooltip ("Effect type: choose it in the TRACK FX drawer");
+    }
     auto& mode = button (*this, { 1062, 128, 83, 24 }, "MASTER", [] {});
     mode.setClickingTogglesState (true);
-    mode.onClick = [&mode] { mode.setButtonText (mode.getToggleState() ? "SINGLE" : "MASTER"); };
+    mode.onClick = [this, &mode]
+    {
+        mode.setButtonText (mode.getToggleState() ? "SINGLE" : "MASTER");
+        processor.fxSingle.store (mode.getToggleState());
+    };
+    mode.setToggleState (processor.fxSingle.load(), dontSendNotification);
+    mode.setButtonText (processor.fxSingle.load() ? "SINGLE" : "MASTER");
     hostKnob ({ 1072, 189, 66, 173 }, "fxlevel", "FX Level", true, Slider::LinearVertical);
     hostKnob ({ 1160, 227, 93, 134 }, "highpass", "High Pass", true, Slider::LinearVertical);
     hostKnob ({ 1261, 227, 94, 134 }, "repeat", "Repeater", true, Slider::LinearVertical);
@@ -961,9 +1054,14 @@ void Panel::refresh()
         quickNames[size_t (i)]->setText (name, dontSendNotification);
         quick[size_t (i)]->setName (name);
         quick[size_t (i)]->setTooltip (name);
-        quick[size_t (i)]->setEnabled (i < names.size());
-        quick[size_t (i)]->setAlpha (i < names.size() ? 1.0f : 0.40f);
+        const bool connected = i < names.size() && quickControl (section, i, track) >= 0;
+        quick[size_t (i)]->setEnabled (connected);
+        quick[size_t (i)]->setAlpha (connected ? 1.0f : 0.40f);
+        if (i < names.size() && !connected)
+            quick[size_t (i)]->setTooltip (name + " - no MIDI control on SEQTRAK; edit it in Deep Edit");
     }
+    processor.uiTrack.store (track);
+    processor.uiSection.store (section);
     repaint();
 }
 

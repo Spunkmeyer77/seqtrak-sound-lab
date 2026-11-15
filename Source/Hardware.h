@@ -117,6 +117,11 @@ public:
 
     unsigned connectionEpoch() const { return usbEpoch.load(); }
 
+    void scheduleCC (int part, int controller, int value, double time)
+    {
+        schedule ({ time, { uint8 (176 + jlimit (0, 15, part)), uint8 (controller & 127), uint8 (jlimit (0, 127, value)) }, 3 });
+    }
+
     void scheduleNote (bool on, int part, int note, int velocity, double time)
     {
         schedule ({ time, { uint8 ((on ? 144 : 128) + part), uint8 (note), uint8 (velocity) }, 3 });
