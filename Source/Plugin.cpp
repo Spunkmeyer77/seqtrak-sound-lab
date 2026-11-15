@@ -1422,6 +1422,9 @@ void Panel::voiceDrawer (bool random)
                                    values[t][k], Slider::LinearHorizontal, false);
             fader.setTextBoxStyle (Slider::TextBoxRight, false, 47, 22);
             fader.setEnabled (editable);
+            // Double-click resets the parameter to its default value (undoable).
+            fader.setDoubleClickReturnValue (true, jlimit (int (def["min"]), int (def["max"]),
+                                                           int (def.getProperty ("value", def["min"]))));
             fader.onDragStart = [this, t] { checkpoint (int (t)); };
             fader.onValueChange = [this, t, k, &fader]
             {
