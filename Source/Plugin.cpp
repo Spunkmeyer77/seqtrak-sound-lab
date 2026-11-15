@@ -67,12 +67,12 @@ String helpFor (const String& text)
     static const std::map<String, String> help {
         { "HELP", "Turn hover help on or off." },
         { "ABOUT", "Version, contact and website." },
-        { "FOLLOW", "Step pads follow the playing page." },
+        { "FOLLOW", "When on (orange), the pads follow the playing page. Turn off to edit one page while it plays." },
         { "VOL+", "Raise the selected track's volume." }, { "VOL-", "Lower the selected track's volume." },
         { "DELETE", "Clear all steps of the selected track." },
         { "MUTE", "Mute the selected track in the plugin sequencer." },
         { "SOLO", "Solo the selected track in the plugin sequencer." },
-        { "PAGE", "Next page of 16 steps (up to 8 pages)." },
+        { "PAGE", "Next page of the track's steps (turns FOLLOW off). Or click the page numbers above the pads." },
         { "PLAY", "Start or stop the sequencer (standalone; in a DAW use the DAW transport)." },
         { "USB", "Open Connection: choose SEQTRAK's USB ports and press IDENTIFY." },
         { "MIDI", "Open Connection: MIDI ports and options." },
@@ -868,11 +868,22 @@ public:
         if (p.x >= 40 && p.x < 840 && p.y >= 283 && p.y < 405)
             return "Step pads. Click a top pad to toggle; drag to paint many steps; hold or right-click "
                    "(or click the lower pad) to edit note, velocity, probability, timing, gate and flam.";
+        if (p.y >= 250 && p.y < 273 && p.x >= 212 && p.x < 212 + pagesFor (track) * 22)
+            return "Pages: click a number to show that page (turns FOLLOW off). The light bar marks the playing page.";
         if (p.x >= 1160 && p.x < 1360 && p.y >= 30 && p.y < 200)
             return "Display: current sound, pattern and values while you turn a control.";
         return {};
     }
     bool painting = false, paintValue = false;
+    TextButton* followButton = nullptr;
+    int pagesFor (int t) const { return jlimit (1, 8, (lengths[size_t (t)] + 15) / 16); }
+    // Choosing a page by hand turns FOLLOW off, so the pads stay where you are editing.
+    void showPage (int p)
+    {
+        page = jlimit (0, pagesFor (track) - 1, p);
+        if (processor.bank.follow.load()) { processor.bank.follow.store (false); refresh(); }
+        repaint();
+    }
     int lastPaint = -1;
     int heldPad = -1, flashedPad = -1;
     int64 lastFingerprint = -1;
@@ -1122,7 +1133,7 @@ void Panel::makeMain()
             }
             else if (i == 2) { grid[size_t (track)] = {}; publishSequence(); }
             else if (i < 5) { mix[size_t (track)][size_t (i - 3)] = !mix[size_t (track)][size_t (i - 3)]; publishSequence(); }
-            else if (i == 5) { page = (page + 1) % 8; processor.bank.follow.store (false); if (editedStep >= 0) closeDrawer(); }
+            else if (i == 5) { showPage ((page + 1) % pagesFor (track)); if (editedStep >= 0) closeDrawer(); }
             else
             {
                 if (processor.wrapperType == AudioProcessor::wrapperType_Standalone)
@@ -1212,11 +1223,13 @@ void Panel::makeMain()
             [this, i] { if (drawer == i) closeDrawer(); else showDrawer (i); });
     lengthButton = &button (*this, { 235, 12, 112, 24 }, "LENGTH " + String (lengths[size_t (track)]),
                            [this] { lengthMenu(); }, false);
-    button (*this, { 353, 12, 80, 24 }, "FOLLOW", [this]
+    followButton = &button (*this, { 353, 12, 80, 24 }, "FOLLOW", [this]
     {
         processor.bank.follow.store (!processor.bank.follow.load());
         refresh();
     }, false);
+    followButton->setColour (TextButton::buttonOnColourId, orange);
+    followButton->setColour (TextButton::textColourOnId, cream);
     button (*this, { 726, 12, 100, 24 }, "ABOUT", [this] { about(); }, false);
     auto& help = button (*this, { 565, 12, 70, 24 }, "HELP", [] {}, false);
     help.setClickingTogglesState (true);
@@ -1283,6 +1296,8 @@ void Panel::refresh()
     }
     processor.uiTrack.store (track);
     processor.uiSection.store (section);
+    if (followButton != nullptr) followButton->setToggleState (processor.bank.follow.load(), dontSendNotification);
+    page = jmin (page, pagesFor (track) - 1);
     repaint();
 }
 
@@ -1308,7 +1323,22 @@ void Panel::paint (Graphics& g)
     text (ink.withAlpha (0.76f), "EDITOR", { 173, 10, 90, 29 }, 16, Font::bold | Font::italic);
     text (ink.withAlpha (0.65f), "DRUMS", { 48, 38, 100, 17 }, 11);
     text (ink.withAlpha (0.65f), "SYNTH / SAMPLER", { 615, 38, 190, 17 }, 11);
-    text (ink, tracks[track] + "   /   PAGE " + String (page + 1) + " OF 8", { 49, 249, 320, 25 }, 13);
+    text (ink, tracks[track] + "   /   PAGE " + String (page + 1) + " OF " + String (pagesFor (track)), { 49, 249, 160, 25 }, 13);
+    // Page selector: one box per page this track uses; the shown page is dark, the playing page has a light bar.
+    for (int p = 0; p < pagesFor (track); ++p)
+    {
+        const auto box = Rectangle<float> (float (212 + p * 22), 252.0f, 19.0f, 19.0f);
+        g.setColour (p == page ? ink : inset.darker (0.08f));
+        g.fillRoundedRectangle (box, 2.0f);
+        g.setColour (p == page ? cream : ink);
+        g.setFont (face (11, Font::bold));
+        g.drawText (String (p + 1), box.toNearestInt(), Justification::centred);
+        if (playing && head >= 0 && head / 16 == p)
+        {
+            g.setColour (p == page ? cream : ink.withAlpha (0.6f));
+            g.fillRect (box.getX() + 4.0f, box.getBottom() - 3.0f, box.getWidth() - 8.0f, 2.0f);
+        }
+    }
     text (ink, String (bpm) + " BPM    /    " + (playing ? "PLAYING" : "STOPPED"),
           { 672, 249, 155, 25 }, 13);
     text (ink, "SWING " + String (swing) + "%  /  FOLLOW " + (processor.bank.follow.load() ? "ON" : "OFF"), { 393, 249, 260, 25 }, 11);
@@ -1437,6 +1467,11 @@ void Panel::paint (Graphics& g)
 
 void Panel::mouseDown (const MouseEvent& event)
 {
+    if (event.y >= 250 && event.y < 273 && event.x >= 212 && event.x < 212 + pagesFor (track) * 22)
+    {
+        showPage ((event.x - 212) / 22);
+        return;
+    }
     const auto x = event.x - 40;
     if (x < 0 || x >= 800 || x % 50 >= 46) return;
     if (!((event.y >= 289 && event.y < 335) || (event.y >= 355 && event.y < 401))) return;
@@ -2759,7 +2794,7 @@ void Panel::timerCallback()
     bpm = roundToInt (bank.displayTempo.load());
     playing = bank.playing.load();
     head = bank.heads[size_t (track)].load();
-    if (bank.follow.load() && head >= 0 && editedStep < 0 && heldPad < 0) page = head / 16;
+    if (bank.follow.load() && head >= 0 && editedStep < 0 && heldPad < 0 && !painting) page = jmin (head / 16, pagesFor (track) - 1);
     // Only repaint when something visible changed (plus a slow safety refresh),
     // instead of redrawing the whole panel 30 times a second.
     int64 fingerprint = (int64 (bpm) << 40) ^ (int64 (head + 1) << 24) ^ (int64 (page) << 16) ^ (int64 (track) << 8)
