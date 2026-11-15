@@ -614,7 +614,6 @@ public:
     // Set by the editor: which track/section the panel controls address, and the MASTER/SINGLE switch.
     std::atomic<int> uiTrack { 0 }, uiSection { 0 };
     std::atomic<bool> fxSingle { false };
-private:
     std::array<std::atomic<float>*, 11> volumeParameters {};
     std::array<std::atomic<float>*, 4> quickParameters {};
     std::atomic<float>* fxLevelParameter = nullptr, * highPassParameter = nullptr, * repeatParameter = nullptr;
