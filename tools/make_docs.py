@@ -234,6 +234,7 @@ story = [
            "<b>GATE</b> 1–100% of a step: note length.",
            "<b>FLAM</b> 0–50% of a step: adds a softer grace note before the hit."])),
     ch("Piano Roll (Synth 1, Synth 2, DX)",
+       *fig("roll", 130*mm, "The piano roll on SYNTH 1: long notes, a Minor chord (dashed tones), scale lock on C minor, velocity lane and the step-record cursor."),
        Paragraph("Press <b>ROLL</b> in the top bar to swap the step pads for a piano roll; <b>PADS</b> goes back. The roll uses the "
                  "whole left section and shows two octaves.", B),
        bl(["<b>Track tabs</b> SYNTH 1 · SYNTH 2 · DX switch the part you edit (the selected tab has the thin dark frame). "
@@ -250,6 +251,7 @@ story = [
            "<b>VEL</b> lane at the bottom: drag up or down on a column to set the note's velocity.",
            "Click the piano keys on the left to hear a note on SEQTRAK."])),
     ch("Recording Notes: Step and Live",
+       *fig("padsrec", 130*mm, "In the pads view, STEP | LIVE and REC sit at the right of the status line."),
        Paragraph("At the right of the status line (pads) or the roll's top row: <b>STEP | LIVE</b> chooses the mode, "
                  "<b>REC</b> arms recording (orange). Play from a MIDI keyboard through your DAW, or from the computer keyboard.", B),
        bl(["<b>STEP:</b> a cream cursor marks the step. Each note fills it and moves on; notes played together become a chord "
