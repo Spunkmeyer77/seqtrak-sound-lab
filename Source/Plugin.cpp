@@ -639,7 +639,10 @@ public:
         }
         const auto slotAt = [&] (int i) { return bank.chainSlots[size_t (i)].load(); };
         const auto barsAt = [&] (int i) { return jlimit (1, 64, bank.chainBars[size_t (i)].load()); };
-        const auto position = [&] (double ppq) { return (ppq - clock.barOrigin) / clock.barLength; };
+        // The host's bar origin is the start of the *current* bar and moves every bar,
+        // so count bars against a fixed grid aligned to it instead.
+        const double origin = clock.barOrigin - std::floor (clock.barOrigin / clock.barLength) * clock.barLength;
+        const auto position = [&] (double ppq) { return (ppq - origin) / clock.barLength; };
         if (!chainWasRunning)
         {
             chainWasRunning = true;
