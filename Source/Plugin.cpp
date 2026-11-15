@@ -799,6 +799,9 @@ public:
     void paint (Graphics& g) override;
     void mouseDown (const MouseEvent&) override;
     void mouseUp (const MouseEvent&) override;
+    void mouseDrag (const MouseEvent&) override;
+    bool painting = false, paintValue = false;
+    int lastPaint = -1;
     int heldPad = -1, flashedPad = -1;
     int64 lastFingerprint = -1;
     int safetyTicks = 0;
@@ -1329,6 +1332,10 @@ void Panel::mouseDown (const MouseEvent& event)
     else if (event.y < 335)
     {
         heldPad = step;
+        // A drag from here paints this value across every pad the mouse passes over.
+        painting = false;
+        paintValue = !stepAt (step).on;
+        lastPaint = step;
         Timer::callAfterDelay (400, [safe = Component::SafePointer<Panel> (self()), step, press = ++padPress]
         {
             if (safe == nullptr || safe->heldPad != step || safe->padPress != press || !safe->isMouseButtonDown()) return;
@@ -1338,8 +1345,30 @@ void Panel::mouseDown (const MouseEvent& event)
     }
 }
 
+void Panel::mouseDrag (const MouseEvent& event)
+{
+    if (heldPad < 0 && !painting) return;
+    const auto x = event.x - 40;
+    if (x < 0 || x >= 800 || event.y < 280 || event.y >= 410) return;
+    const int step = jlimit (0, 15, x / 50);
+    if (step == lastPaint && painting) return;
+    if (!painting)
+    {
+        if (step == heldPad) return;             // still on the first pad: keep hold-to-edit
+        painting = true;
+        stepAt (heldPad).on = paintValue;        // the pad where the drag started
+        heldPad = -1;                            // cancels hold-to-edit
+    }
+    for (int i = jmin (lastPaint, step); i <= jmax (lastPaint, step); ++i)   // fill skipped pads on fast drags
+        stepAt (i).on = paintValue;
+    lastPaint = step;
+    publishSequence();
+    repaint (33, 246, 807, 174);
+}
+
 void Panel::mouseUp (const MouseEvent&)
 {
+    if (painting) { painting = false; lastPaint = -1; return; }
     if (heldPad < 0) return;
     auto& step = stepAt (heldPad);
     heldPad = -1;
