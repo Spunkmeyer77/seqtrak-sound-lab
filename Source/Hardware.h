@@ -385,6 +385,12 @@ public:
         return true;
     }
     size_t queuedMessages() const { return outbox.size(); }
+    // Note sent straight away (UI thread): monitoring notes typed on the computer keyboard.
+    void sendNoteNow (int part, int note, int velocity, bool on)
+    {
+        if (!verified) return;
+        transmit ({ uint8 ((on ? 144 : 128) + jlimit (0, 15, part)), uint8 (note & 127), uint8 (on ? jlimit (1, 127, velocity) : 0) });
+    }
     // Control Change sent straight away (UI thread), e.g. mute/solo.
     void sendControlNow (int channel, int controller, int value)
     {

@@ -60,6 +60,13 @@ jobs:
           productbuild --distribution pkg/dist.xml --package-path pkg "out/SEQTRAK-Editor-v$V-macOS.pkg"
           mkdir -p plug && cp -R "$A/AU/SEQTRAK Editor.component" "$A/VST3/SEQTRAK Editor.vst3" "$A/Standalone/SEQTRAK Editor.app" plug/
           ditto -c -k plug "out/SEQTRAK-Editor-v$V-macOS-plugins.zip"
+      - name: Render UI previews (real plugin drawing)
+        continue-on-error: true
+        run: |
+          V=${{ steps.v.outputs.ver }}
+          APP="build/SEQTRAKEditor_artefacts/Release/Standalone/SEQTRAK Editor.app/Contents/MacOS/SEQTRAK Editor"
+          SEQTRAK_SNAPSHOT="$PWD/out/SEQTRAK-Editor-v$V-Preview" perl -e 'alarm 90; exec @ARGV' "$APP" || true
+          ls -la out
       - uses: actions/upload-artifact@v4
         with: { name: macos, path: out/* }
 

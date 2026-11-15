@@ -374,6 +374,17 @@ public:
             }
         }
         const auto blockTime = Time::getMillisecondCounterHiRes() + 4.0;
+        // Notes played into the plugin: play them on the selected track (thru), and hand them to the
+        // editor for step / live recording.
+        for (const auto meta : midi)
+        {
+            const auto m = meta.getMessage();
+            if (!m.isNoteOnOrOff()) continue;
+            const bool on = m.isNoteOn();
+            hardware.scheduleNote (on, jlimit (0, 10, uiTrack.load()), m.getNoteNumber(), on ? int (m.getVelocity()) : 0,
+                                   blockTime + meta.samplePosition * 1000.0 / sampleRate);
+            pushInputNote ({ m.getNoteNumber(), on ? int (m.getVelocity()) : 0, on });
+        }
         generated.clear();
         const auto epoch = hardware.connectionEpoch();
         if (controlEpoch != epoch)
@@ -674,6 +685,21 @@ public:
     // Set by the editor: which track/section the panel controls address, and the MASTER/SINGLE switch.
     std::atomic<int> uiTrack { 0 }, uiSection { 0 };
     std::atomic<bool> fxSingle { false };
+    struct InputNote { int note = 0, velocity = 0; bool on = false; };
+    bool popInputNote (InputNote& n)
+    {
+        const auto scope = inputFifo.read (1);
+        if (scope.blockSize1 == 0) return false;
+        n = inputNotes[size_t (scope.startIndex1)];
+        return true;
+    }
+    void pushInputNote (InputNote n)
+    {
+        const auto scope = inputFifo.write (1);
+        if (scope.blockSize1 > 0) inputNotes[size_t (scope.startIndex1)] = n;
+    }
+    std::array<InputNote, 256> inputNotes {};
+    AbstractFifo inputFifo { 256 };
     std::array<std::atomic<float>*, 11> volumeParameters {};
     std::array<std::atomic<float>*, 4> quickParameters {};
     std::atomic<float>* fxLevelParameter = nullptr, * highPassParameter = nullptr, * repeatParameter = nullptr;
@@ -876,6 +902,262 @@ public:
     }
     bool painting = false, paintValue = false;
     TextButton* followButton = nullptr;
+
+    // ---------------- Piano roll (synth tracks) and step / live recording ----------------
+    static constexpr int rollX0 = 82, rollGT = 100, rollGH = 258, rollVT = 366, rollVH = 48;
+    static constexpr float rollW = 47.0f;
+    bool rollMode = false, scaleLock = true, recArmed = false;
+    int rollKey = 0, rollScale = 1, rollSelected = -1, rollDragStep = -1, recMode = 0, recCursor = 0, keyboardBase = 60;
+    bool rollVelDrag = false;
+    std::array<int, 3> rollBase { 48, 48, 48 };
+    TextButton *padsButton = nullptr, *rollButton = nullptr, *scaleButton = nullptr, *octDownButton = nullptr, *octUpButton = nullptr,
+               *recStepButton = nullptr, *recLiveButton = nullptr, *recButton = nullptr, *restButton = nullptr, *backButton = nullptr;
+    std::array<TextButton*, 3> rollTabs {};
+    ComboBox *keyBox = nullptr, *scaleBox = nullptr, *rollChordBox = nullptr;
+    std::vector<Component*> rollHidden;
+    double lastRecTime = 0;
+    int lastRecStep = -1;
+    std::vector<int> recChord;
+    std::map<int, std::pair<int, double>> liveHeld;   // note -> (step, start ms)
+    std::map<int, int> keysDown;                       // key code -> note
+
+    static const std::vector<std::pair<String, std::vector<int>>>& rollScales()
+    {
+        static const std::vector<std::pair<String, std::vector<int>>> list {
+            { "Major", { 0, 2, 4, 5, 7, 9, 11 } }, { "Minor", { 0, 2, 3, 5, 7, 8, 10 } }, { "Dorian", { 0, 2, 3, 5, 7, 9, 10 } },
+            { "Phrygian", { 0, 1, 3, 5, 7, 8, 10 } }, { "Mixolydian", { 0, 2, 4, 5, 7, 9, 10 } },
+            { "Harm. minor", { 0, 2, 3, 5, 7, 8, 11 } }, { "Minor pent.", { 0, 3, 5, 7, 10 } },
+            { "Major pent.", { 0, 2, 4, 7, 9 } }, { "Blues", { 0, 3, 5, 6, 7, 10 } } };
+        return list;
+    }
+    static bool isSynth (int t) { return t >= 7 && t <= 9; }
+    int& baseFor() { return rollBase[size_t (jlimit (0, 2, track - 7))]; }
+    std::vector<int> rollRows()
+    {
+        std::vector<int> rows;
+        const auto& scale = rollScales()[size_t (rollScale)].second;
+        for (int p = baseFor() + 24; p >= baseFor(); --p)
+            if (!scaleLock || std::find (scale.begin(), scale.end(), ((p - rollKey) % 12 + 12) % 12) != scale.end())
+                rows.push_back (p);
+        return rows;
+    }
+    Step& absStep (int a) { return grid[size_t (track)][size_t (a / 16)][size_t (a % 16)]; }
+
+    void setRoll (bool on)
+    {
+        if (on && !isSynth (track) && trackButtons[8] != nullptr) trackButtons[8]->onClick();   // SYNTH 1
+        if (on == rollMode) { updateRollControls(); return; }
+        rollMode = on;
+        if (on)
+        {
+            for (auto* c : getChildren())
+            {
+                if (isRollControl (c) || !c->isVisible()) continue;
+                const auto b = c->getBounds();
+                if (b.getX() >= 34 && b.getRight() <= 841 && b.getY() >= 38) { c->setVisible (false); rollHidden.push_back (c); }
+            }
+        }
+        else
+        {
+            for (auto* c : rollHidden) c->setVisible (true);
+            rollHidden.clear();
+        }
+        rollSelected = -1;
+        updateRollControls();
+        repaint();
+    }
+    bool isRollControl (Component* c) const
+    {
+        for (auto* r : { (Component*) padsButton, (Component*) rollButton, (Component*) scaleButton, (Component*) octDownButton,
+                         (Component*) octUpButton, (Component*) recStepButton, (Component*) recLiveButton, (Component*) recButton,
+                         (Component*) restButton, (Component*) backButton, (Component*) keyBox, (Component*) scaleBox,
+                         (Component*) rollChordBox, (Component*) rollTabs[0], (Component*) rollTabs[1], (Component*) rollTabs[2] })
+            if (r == c) return true;
+        return false;
+    }
+    void updateRollControls()
+    {
+        if (padsButton == nullptr) return;
+        padsButton->setToggleState (!rollMode, dontSendNotification);
+        rollButton->setToggleState (rollMode, dontSendNotification);
+        for (Component* c : { (Component*) scaleButton, (Component*) octDownButton, (Component*) octUpButton,
+                              (Component*) keyBox, (Component*) scaleBox, (Component*) rollChordBox,
+                              (Component*) rollTabs[0], (Component*) rollTabs[1], (Component*) rollTabs[2] })
+            c->setVisible (rollMode);
+        for (int i = 0; i < 3; ++i) rollTabs[size_t (i)]->setToggleState (track == 7 + i, dontSendNotification);
+        scaleButton->setToggleState (scaleLock, dontSendNotification);
+        const int y = rollMode ? 43 : 250;
+        recStepButton->setBounds (636, y, 44, 22);
+        recLiveButton->setBounds (682, y, 44, 22);
+        recButton->setBounds (730, y, 100, 22);
+        if (rollMode) { restButton->setBounds (36, rollVT, 44, 22); backButton->setBounds (36, rollVT + 26, 44, 22); }
+        else { restButton->setBounds (530, 250, 48, 22); backButton->setBounds (582, 250, 48, 22); }
+        const bool stepRec = recArmed && recMode == 0;
+        restButton->setVisible (stepRec);
+        backButton->setVisible (stepRec);
+        recStepButton->setToggleState (recMode == 0, dontSendNotification);
+        recLiveButton->setToggleState (recMode == 1, dontSendNotification);
+        recButton->setToggleState (recArmed, dontSendNotification);
+        recButton->setButtonText (!recArmed ? "REC" : recMode == 0 ? "REC  STEP " + String (recCursor + 1) : "REC  LIVE");
+        if (rollChordBox != nullptr)
+        {
+            const bool has = rollSelected >= 0 && rollSelected < lengths[size_t (track)] && absStep (rollSelected).on;
+            rollChordBox->setSelectedItemIndex (has ? absStep (rollSelected).chord : 0, dontSendNotification);
+            rollChordBox->setEnabled (has);
+        }
+    }
+
+    static int matchChord (std::vector<int> notes)
+    {
+        std::sort (notes.begin(), notes.end());
+        notes.erase (std::unique (notes.begin(), notes.end()), notes.end());
+        if (notes.size() < 2) return 0;
+        for (size_t c = 1; c < seqtrak::chordTypes.size(); ++c)
+        {
+            const auto& type = seqtrak::chordTypes[c];
+            if (type.count != int (notes.size()) - 1) continue;
+            bool same = true;
+            for (int i = 0; i < type.count; ++i) same = same && type.intervals[size_t (i)] == notes[size_t (i + 1)] - notes[0];
+            if (same) return int (c);
+        }
+        return 0;
+    }
+
+    // A note from a MIDI keyboard (via the DAW) or the computer keyboard.
+    void recordNote (int note, int velocity, bool on)
+    {
+        const double now = Time::getMillisecondCounterHiRes();
+        if (!on)
+        {
+            const auto it = liveHeld.find (note);
+            if (it == liveHeld.end()) return;
+            if (isSynth (track))
+            {
+                const double stepMs = 60000.0 / jmax (20, bpm) / 4.0;
+                absStep (it->second.first).gate = jlimit (10, 1600, roundToInt ((now - it->second.second) / stepMs * 100.0));
+                publishSequence();
+            }
+            liveHeld.erase (it);
+            return;
+        }
+        if (!recArmed) return;
+        const int length = jlimit (1, 128, lengths[size_t (track)]);
+        const bool together = now - lastRecTime < 60.0 && lastRecStep >= 0;   // notes played together = chord
+        int s;
+        if (recMode == 0)
+        {
+            if (together) s = lastRecStep;
+            else { s = recCursor % length; recCursor = (s + 1) % length; recChord.clear(); }
+        }
+        else
+        {
+            const int h = processor.bank.heads[size_t (track)].load();
+            if (!playing || h < 0) return;
+            s = together ? lastRecStep : h % length;
+            if (!together) recChord.clear();
+            liveHeld[note] = { s, now };
+        }
+        auto& st = absStep (s);
+        st.on = true;
+        st.velocity = jlimit (1, 127, velocity);
+        if (isSynth (track))
+        {
+            recChord.push_back (note);
+            st.note = *std::min_element (recChord.begin(), recChord.end());
+            st.chord = matchChord (recChord);
+            if (recMode == 0) st.gate = 90;
+        }
+        lastRecTime = now;
+        lastRecStep = s;
+        if (recMode == 0) page = jmin (recCursor / 16, pagesFor (track) - 1);
+        publishSequence();
+        updateRollControls();
+        repaint();
+    }
+
+    bool keyPressed (const KeyPress& key) override
+    {
+        static const String layout = "awsedftgyhujk";
+        const auto c = CharacterFunctions::toLowerCase (key.getTextCharacter());
+        if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown()) return false;
+        if (const int i = layout.indexOfChar (c); i >= 0)
+        {
+            if (keysDown.count (key.getKeyCode())) return true;
+            const int note = jlimit (0, 127, (isSynth (track) && rollMode ? baseFor() : keyboardBase) + i);
+            keysDown[key.getKeyCode()] = note;
+            processor.hardware.sendNoteNow (track, note, 100, true);
+            recordNote (note, 100, true);
+            return true;
+        }
+        if (c == 'z' || c == 'x')
+        {
+            int& b = rollMode && isSynth (track) ? baseFor() : keyboardBase;
+            b = jlimit (24, 96, b + (c == 'z' ? -12 : 12));
+            repaint();
+            return true;
+        }
+        if (recArmed && recMode == 0 && (key == KeyPress::spaceKey || key == KeyPress::backspaceKey))
+        {
+            const int length = jlimit (1, 128, lengths[size_t (track)]);
+            recCursor = (recCursor + (key == KeyPress::spaceKey ? 1 : length - 1)) % length;
+            lastRecStep = -1;
+            page = jmin (recCursor / 16, pagesFor (track) - 1);
+            updateRollControls();
+            repaint();
+            return true;
+        }
+        return false;
+    }
+    bool keyStateChanged (bool isKeyDown) override
+    {
+        if (isKeyDown) return false;
+        for (auto it = keysDown.begin(); it != keysDown.end();)
+        {
+            if (KeyPress::isKeyCurrentlyDown (it->first)) { ++it; continue; }
+            processor.hardware.sendNoteNow (track, it->second, 0, false);
+            recordNote (it->second, 0, false);
+            it = keysDown.erase (it);
+        }
+        return false;
+    }
+
+    void renderSnapshots (const String& path)
+    {
+        if (trackButtons[8] != nullptr) trackButtons[8]->onClick();   // SYNTH 1
+        struct Demo { int s, note, gate, chord, velocity; };
+        for (const auto& d : { Demo { 0, 48, 400, 2, 110 }, Demo { 4, 55, 200, 0, 90 }, Demo { 6, 53, 200, 0, 80 },
+                               Demo { 8, 51, 400, 1, 120 }, Demo { 12, 50, 200, 0, 95 }, Demo { 14, 55, 200, 8, 85 } })
+        {
+            auto& st = grid[7][0][size_t (d.s)];
+            st.on = true; st.note = d.note; st.gate = d.gate; st.chord = d.chord; st.velocity = d.velocity;
+        }
+        const auto save = [this] (const String& file)
+        {
+            const auto image = createComponentSnapshot (getLocalBounds(), true, 2.0f);
+            File (file).deleteFile();
+            FileOutputStream out (File { file });
+            if (out.openedOk()) PNGImageFormat().writeImageToStream (image, out);
+        };
+        repaint();
+        save (path + "-Pads.png");
+        setRoll (true);
+        rollSelected = 0;
+        recArmed = true; recMode = 0; recCursor = 3;
+        updateRollControls();
+        repaint();
+        save (path + "-Roll.png");
+        JUCEApplicationBase::quit();
+    }
+
+    void paintRoll (Graphics& g);
+    void rollMouseDown (const MouseEvent&);
+    void rollMouseDrag (const MouseEvent&);
+    void mouseDoubleClick (const MouseEvent& e) override
+    {
+        if (!rollMode) return;
+        const int col = int ((e.x - rollX0) / rollW);
+        if (e.y >= rollGT && e.y < rollGT + rollGH && col >= 0 && col < 16) editStep (col);
+    }
     // Mirror MUTE/SOLO on SEQTRAK itself: CC 23 = mute (per track channel), CC 24 = solo (0 off, 1-11 = track).
     void sendMixToSeqtrak (bool soloChanged)
     {
@@ -1260,6 +1542,76 @@ void Panel::makeMain()
         if (help.getToggleState()) tooltip = std::make_unique<TooltipWindow> (this, 350);
         else tooltip.reset();
     };
+
+    // ---- PADS / ROLL, piano-roll controls, step / live recording ----
+    const auto orangeOn = [this] (TextButton& b) { b.setColour (TextButton::buttonOnColourId, orange); b.setColour (TextButton::textColourOnId, cream); };
+    padsButton = &button (*this, { 440, 12, 58, 24 }, "PADS", [this] { setRoll (false); }, false);
+    rollButton = &button (*this, { 502, 12, 58, 24 }, "ROLL", [this] { setRoll (true); }, false);
+    padsButton->setTooltip ("Step pads (all tracks).");
+    rollButton->setTooltip ("Piano roll for SYNTH 1, SYNTH 2 and DX: click to add notes, drag to lengthen.");
+    orangeOn (*padsButton); orangeOn (*rollButton);
+    for (int i = 0; i < 3; ++i)
+    {
+        rollTabs[size_t (i)] = &button (*this, { i == 0 ? 44 : i == 1 ? 118 : 192, 43, i < 2 ? 70 : 48, 22 }, tracks[7 + i],
+                                        [this, i] { if (trackButtons[size_t (8 + i)] != nullptr) trackButtons[size_t (8 + i)]->onClick(); }, false);
+        rollTabs[size_t (i)]->getProperties().set ("italic", true);
+        rollTabs[size_t (i)]->setTooltip ("Edit " + tracks[7 + i] + " in the roll.");
+    }
+    scaleButton = &button (*this, { 44, 70, 84, 22 }, "SCALE LOCK", [this] { scaleLock = !scaleLock; updateRollControls(); repaint(); }, false);
+    scaleButton->setTooltip ("Show only the notes of the chosen key and scale.");
+    orangeOn (*scaleButton);
+    StringArray keyNames { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }, scaleNames, chordNames;
+    for (const auto& sc : rollScales()) scaleNames.add (sc.first);
+    for (const auto& c : seqtrak::chordTypes) chordNames.add (c.name);
+    keyBox = &combo (*this, { 134, 70, 52, 22 }, keyNames, rollKey);
+    keyBox->onChange = [this] { rollKey = jmax (0, keyBox->getSelectedItemIndex()); repaint(); };
+    scaleBox = &combo (*this, { 190, 70, 112, 22 }, scaleNames, rollScale);
+    scaleBox->onChange = [this] { rollScale = jmax (0, scaleBox->getSelectedItemIndex()); repaint(); };
+    octDownButton = &button (*this, { 310, 70, 44, 22 }, "OCT -", [this] { baseFor() = jmax (24, baseFor() - 12); repaint(); }, false);
+    octUpButton = &button (*this, { 400, 70, 44, 22 }, "OCT +", [this] { baseFor() = jmin (96, baseFor() + 12); repaint(); }, false);
+    rollChordBox = &combo (*this, { 498, 70, 96, 22 }, chordNames, 0);
+    rollChordBox->setTooltip ("Chord of the selected note (built on the note).");
+    rollChordBox->onChange = [this]
+    {
+        if (rollSelected < 0 || rollSelected >= lengths[size_t (track)] || !absStep (rollSelected).on) return;
+        absStep (rollSelected).chord = jmax (0, rollChordBox->getSelectedItemIndex());
+        publishSequence();
+        repaint();
+    };
+    recStepButton = &button (*this, { 636, 250, 44, 22 }, "STEP", [this] { recMode = 0; lastRecStep = -1; updateRollControls(); repaint(); }, false);
+    recLiveButton = &button (*this, { 682, 250, 44, 22 }, "LIVE", [this] { recMode = 1; lastRecStep = -1; updateRollControls(); repaint(); }, false);
+    recButton = &button (*this, { 730, 250, 100, 22 }, "REC", [this]
+    {
+        recArmed = !recArmed;
+        lastRecStep = -1;
+        liveHeld.clear();
+        if (recArmed && recMode == 0) recCursor = page * 16;
+        if (recArmed) grabKeyboardFocus();
+        updateRollControls();
+        repaint();
+    }, false);
+    recStepButton->setTooltip ("Step record: each note or chord fills the cursor step and moves on (Space = rest, Backspace = back).");
+    recLiveButton->setTooltip ("Live record: play along while the pattern plays; notes land on the playing step.");
+    recButton->setTooltip ("Arm recording from a MIDI keyboard or the computer keyboard (A W S E D F T G Y H U J K, Z/X = octave).");
+    for (auto* b : { recStepButton, recLiveButton, recButton }) orangeOn (*b);
+    restButton = &button (*this, { 530, 250, 48, 22 }, "REST", [this]
+    {
+        const int length = jlimit (1, 128, lengths[size_t (track)]);
+        recCursor = (recCursor + 1) % length; lastRecStep = -1; page = jmin (recCursor / 16, pagesFor (track) - 1);
+        updateRollControls(); repaint();
+    }, false);
+    backButton = &button (*this, { 582, 250, 48, 22 }, "BACK", [this]
+    {
+        const int length = jlimit (1, 128, lengths[size_t (track)]);
+        recCursor = (recCursor + length - 1) % length; lastRecStep = -1; page = jmin (recCursor / 16, pagesFor (track) - 1);
+        updateRollControls(); repaint();
+    }, false);
+    setWantsKeyboardFocus (true);
+    updateRollControls();
+    // Build machine only: SEQTRAK_SNAPSHOT=<path> makes the standalone app save pictures of the panel and quit.
+    if (const auto snap = SystemStats::getEnvironmentVariable ("SEQTRAK_SNAPSHOT", {}); snap.isNotEmpty())
+        Timer::callAfterDelay (3000, [safe = Component::SafePointer<Panel> (self()), snap]
+            { if (safe != nullptr) safe->renderSnapshots (snap); });
     auto& scale = combo (*this, { 645, 12, 74, 24 }, { "75%", "100%", "125%", "150%" }, 1);
     scale.setTooltip ("Window size.");
     scale.onChange = [this, &scale]
@@ -1315,6 +1667,8 @@ void Panel::refresh()
     }
     processor.uiTrack.store (track);
     processor.uiSection.store (section);
+    if (rollMode && !isSynth (track)) setRoll (false);
+    else updateRollControls();
     if (followButton != nullptr) followButton->setToggleState (processor.bank.follow.load(), dontSendNotification);
     page = jmin (page, pagesFor (track) - 1);
     repaint();
@@ -1332,14 +1686,17 @@ void Panel::paint (Graphics& g)
     fill (inset, { 0, 0, 33, height });
     fill (ink.withAlpha (0.25f), { 33, 0, 1, height });
     fill (ink.withAlpha (0.23f), { 602, 49, 1, 212 });
+    text (ink, "SEQTRAK", { 49, 6, 141, 32 }, 29, Font::bold | Font::italic);
+    text (ink.withAlpha (0.76f), "EDITOR", { 173, 10, 90, 29 }, 16, Font::bold | Font::italic);
+    if (rollMode) paintRoll (g);
+    else
+    {
     fill (inset, { 34, 246, 806, 32 });
     fill (ink, { 34, 278, 806, 142 });
     // 4/4 beat marks on steps 1, 5, 9 and 13, in the gap between the two pad rows.
     g.setColour (Colour (0xff62686a));
     for (int beat = 0; beat < 4; ++beat)
         g.fillRoundedRectangle (float (40 + beat * 200 + 15), 343.0f, 16.0f, 3.0f, 1.0f);
-    text (ink, "SEQTRAK", { 49, 6, 141, 32 }, 29, Font::bold | Font::italic);
-    text (ink.withAlpha (0.76f), "EDITOR", { 173, 10, 90, 29 }, 16, Font::bold | Font::italic);
     text (ink.withAlpha (0.65f), "DRUMS", { 48, 38, 100, 17 }, 11);
     text (ink.withAlpha (0.65f), "SYNTH / SAMPLER", { 615, 38, 190, 17 }, 11);
     text (ink, tracks[track] + "   /   PAGE " + String (page + 1) + " OF " + String (pagesFor (track)), { 49, 249, 160, 25 }, 13);
@@ -1358,9 +1715,14 @@ void Panel::paint (Graphics& g)
             g.fillRect (box.getX() + 4.0f, box.getBottom() - 3.0f, box.getWidth() - 8.0f, 2.0f);
         }
     }
-    text (ink, String (bpm) + " BPM    /    " + (playing ? "PLAYING" : "STOPPED"),
-          { 672, 249, 155, 25 }, 13);
-    text (ink, "SWING " + String (swing) + "%  /  FOLLOW " + (processor.bank.follow.load() ? "ON" : "OFF"), { 393, 249, 260, 25 }, 11);
+    text (ink, "SWING " + String (swing) + "%  /  FOLLOW " + (processor.bank.follow.load() ? "ON" : "OFF"), { 393, 249, 132, 25 }, 11);
+    if (!(recArmed && recMode == 0))
+        text (ink, String (bpm) + " BPM  /  " + (playing ? "PLAYING" : "STOPPED"), { 530, 249, 104, 25 }, 11);
+    if (recArmed && recMode == 0 && recCursor / 16 == page)   // step-record cursor on the pads
+    {
+        g.setColour (cream);
+        g.drawRoundedRectangle (float (40 + (recCursor % 16) * 50) - 2.0f, 287.0f, 50.0f, 116.0f, 3.0f, 2.0f);
+    }
 
     for (int i = 0; i < 12; ++i)
     {
@@ -1377,6 +1739,7 @@ void Panel::paint (Graphics& g)
         }
     }
 
+    }
     fill (orange, { 840, 0, 560, height });
     fill (recess, { 846, 28, 105, 345 });
     fill (recess, { 1059, 28, 90, 345 });
@@ -1486,6 +1849,7 @@ void Panel::paint (Graphics& g)
 
 void Panel::mouseDown (const MouseEvent& event)
 {
+    if (rollMode) { rollMouseDown (event); return; }
     if (event.y >= 250 && event.y < 273 && event.x >= 212 && event.x < 212 + pagesFor (track) * 22)
     {
         showPage ((event.x - 212) / 22);
@@ -1514,6 +1878,7 @@ void Panel::mouseDown (const MouseEvent& event)
 
 void Panel::mouseDrag (const MouseEvent& event)
 {
+    if (rollMode) { rollMouseDrag (event); return; }
     if (heldPad < 0 && !painting) return;
     const auto x = event.x - 40;
     if (x < 0 || x >= 800 || event.y < 280 || event.y >= 410) return;
@@ -1535,6 +1900,7 @@ void Panel::mouseDrag (const MouseEvent& event)
 
 void Panel::mouseUp (const MouseEvent&)
 {
+    if (rollMode) { rollDragStep = -1; rollVelDrag = false; return; }
     if (painting) { painting = false; lastPaint = -1; return; }
     if (heldPad < 0) return;
     auto& step = stepAt (heldPad);
@@ -1542,6 +1908,208 @@ void Panel::mouseUp (const MouseEvent&)
     step.on = !step.on;
     publishSequence();
     repaint();
+}
+
+void Panel::paintRoll (Graphics& g)
+{
+    const auto text = [&] (Colour c, const String& str, Rectangle<int> area, float size, int flags = Font::bold,
+                           Justification j = Justification::centredLeft)
+    {
+        g.setColour (c); g.setFont (face (size, flags));
+        g.drawFittedText (str, area, j, 1);
+    };
+    const int length = jlimit (1, 128, lengths[size_t (track)]);
+    // Row 1: page numbers (same as the pads), after the track tabs.
+    for (int p = 0; p < pagesFor (track); ++p)
+    {
+        const auto box = Rectangle<float> (float (250 + p * 22), 44.0f, 19.0f, 19.0f);
+        g.setColour (p == page ? ink : inset.darker (0.08f));
+        g.fillRoundedRectangle (box, 2.0f);
+        g.setColour (p == page ? cream : ink);
+        g.setFont (face (11, Font::bold));
+        g.drawText (String (p + 1), box.toNearestInt(), Justification::centred);
+        if (playing && head >= 0 && head / 16 == p)
+        {
+            g.setColour (p == page ? cream : ink.withAlpha (0.6f));
+            g.fillRect (box.getX() + 4.0f, box.getBottom() - 3.0f, box.getWidth() - 8.0f, 2.0f);
+        }
+    }
+    // Row 2: octave, chord label, hint.
+    static const StringArray names { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    text (ink, "C" + String (baseFor() / 12 - 1) + "-C" + String (baseFor() / 12 + 1), { 356, 70, 44, 22 }, 11, Font::bold, Justification::centred);
+    text (ink, "CHORD", { 452, 70, 44, 22 }, 11);
+    text (ink.withAlpha (0.7f), "CLICK ADD  /  DRAG LENGTH  /  CLICK AGAIN DELETE  /  RIGHT-CLICK EDIT", { 602, 70, 230, 22 }, 9);
+
+    g.setColour (ink);
+    g.fillRect (34, 96, 806, 324);
+    const auto rows = rollRows();
+    const float rh = float (rollGH) / float (jmax (1, int (rows.size())));
+    for (size_t r = 0; r < rows.size(); ++r)
+    {
+        const int pitch = rows[r];
+        const float y = float (rollGT) + float (r) * rh;
+        const bool black = names[pitch % 12].endsWithChar ('#');
+        g.setColour (black ? Colour (0xff3a3f41) : grey);
+        g.fillRect (36.0f, y, 44.0f, rh - 1.0f);
+        g.setColour (black ? grey : pitch % 12 == 0 ? orange : ink);
+        g.setFont (face (jmin (11.0f, rh - 1.0f), Font::bold));
+        g.drawText (names[pitch % 12] + String (pitch / 12 - 1), Rectangle<float> (40.0f, y, 40.0f, rh - 1.0f), Justification::centredLeft);
+        for (int s = 0; s < 16; ++s)
+        {
+            const bool inside = page * 16 + s < length;
+            g.setColour (!inside ? Colour (0xff2b2f31) : s % 4 == 0 ? Colour (0xff3d4244) : Colour (0xff33383a));
+            g.fillRect (float (rollX0) + s * rollW, y, rollW - 2.0f, rh - 1.0f);
+        }
+    }
+    // beat marks under the grid, as on the pads
+    g.setColour (Colour (0xff62686a));
+    for (int beat = 0; beat < 4; ++beat)
+        g.fillRoundedRectangle (float (rollX0) + beat * 4 * rollW + rollW / 2.0f - 9.0f, float (rollGT + rollGH + 2), 16.0f, 3.0f, 1.0f);
+    // notes: grey pad blocks with the synth LED bar; chord tones as dashed outlines
+    const float gridRight = float (rollX0) + 16.0f * rollW - 2.0f;
+    for (int s = 0; s < 16; ++s)
+    {
+        const int a = page * 16 + s;
+        if (a >= length) continue;
+        const auto& st = grid[size_t (track)][size_t (page)][size_t (s)];
+        if (!st.on) continue;
+        const float x = float (rollX0) + s * rollW;
+        const float w = jmin (gridRight - x, jmax (8.0f, rollW * float (st.gate) / 100.0f - 3.0f));
+        std::array<int, 5> chord {};
+        const int voices = seqtrak::stepNotes (st, chord);
+        for (int v = 1; v < voices; ++v)
+        {
+            const auto it = std::find (rows.begin(), rows.end(), chord[size_t (v)]);
+            if (it == rows.end()) continue;
+            Path outline;
+            outline.addRoundedRectangle (x + 1.0f, float (rollGT) + float (it - rows.begin()) * rh + 1.0f, w - 2.0f, rh - 3.0f, 2.0f);
+            const float dash[] { 4.0f, 3.0f };
+            Path dashed;
+            PathStrokeType (1.2f).createDashedStroke (dashed, outline, dash, 2);
+            g.setColour (purple);
+            g.fillPath (dashed);
+        }
+        const auto it = std::find (rows.begin(), rows.end(), st.note);
+        if (it == rows.end())   // note outside the visible octaves / scale: small marker at the edge
+        {
+            g.setColour (purple);
+            const bool above = st.note > rows.front();
+            g.fillRect (x + 4.0f, above ? float (rollGT) : float (rollGT + rollGH - 3), rollW - 10.0f, 3.0f);
+            continue;
+        }
+        const float y = float (rollGT) + float (it - rows.begin()) * rh;
+        g.setColour (grey);
+        g.fillRoundedRectangle (x, y, w, rh - 2.0f, 2.0f);
+        g.setColour (purple);
+        g.fillRoundedRectangle (x + 3.0f, y + 2.0f, 3.0f, jmax (2.0f, rh - 6.0f), 1.0f);
+        if (a == rollSelected)
+        {
+            g.setColour (cream);
+            g.drawRoundedRectangle (x - 1.0f, y - 1.0f, w + 2.0f, rh, 2.0f, 2.0f);
+        }
+    }
+    // velocity lane
+    if (!(recArmed && recMode == 0)) text (grey, "VEL", { 40, rollVT + 16, 40, 16 }, 10);
+    for (int s = 0; s < 16; ++s)
+    {
+        const float x = float (rollX0) + s * rollW;
+        g.setColour (Colour (0xff33383a));
+        g.fillRect (x, float (rollVT), rollW - 2.0f, float (rollVH));
+        const auto& st = grid[size_t (track)][size_t (page)][size_t (s)];
+        if (!st.on || page * 16 + s >= length) continue;
+        const float vh = float (rollVH) * float (st.velocity) / 127.0f;
+        g.setColour (grey);
+        g.fillRect (x + 12.0f, float (rollVT + rollVH) - vh, rollW - 26.0f, vh);
+        g.setColour (purple);
+        g.fillRect (x + 12.0f, float (rollVT + rollVH) - vh, rollW - 26.0f, 3.0f);
+    }
+    // playhead and step-record cursor
+    if (playing && head >= 0 && head / 16 == page)
+    {
+        g.setColour (orange.withAlpha (0.25f));
+        g.fillRect (float (rollX0) + (head % 16) * rollW, float (rollGT), rollW - 2.0f, float (rollGH));
+    }
+    if (recArmed && recMode == 0 && recCursor / 16 == page)
+    {
+        g.setColour (cream);
+        g.drawRect (Rectangle<float> (float (rollX0) + (recCursor % 16) * rollW - 1.0f, float (rollGT) - 2.0f, rollW, float (rollGH) + 4.0f), 2.0f);
+    }
+}
+
+void Panel::rollMouseDown (const MouseEvent& e)
+{
+    grabKeyboardFocus();
+    const int length = jlimit (1, 128, lengths[size_t (track)]);
+    if (e.y >= 44 && e.y < 63 && e.x >= 250 && e.x < 250 + pagesFor (track) * 22) { showPage ((e.x - 250) / 22); return; }
+    const auto rows = rollRows();
+    const float rh = float (rollGH) / float (jmax (1, int (rows.size())));
+    const int row = int ((e.y - rollGT) / rh);
+    if (e.x >= 36 && e.x < 80 && e.y >= rollGT && e.y < rollGT + rollGH && isPositiveAndBelow (row, int (rows.size())))
+    {   // piano keys: play the note (and record it when REC is armed)
+        processor.hardware.sendNoteNow (track, rows[size_t (row)], 100, true);
+        recordNote (rows[size_t (row)], 100, true);
+        Timer::callAfterDelay (200, [safe = Component::SafePointer<Panel> (self()), note = rows[size_t (row)]]
+        {
+            if (safe == nullptr) return;
+            safe->processor.hardware.sendNoteNow (safe->track, note, 0, false);
+            safe->recordNote (note, 0, false);
+        });
+        return;
+    }
+    const int col = int ((e.x - rollX0) / rollW);
+    if (!isPositiveAndBelow (col, 16) || page * 16 + col >= length) return;
+    auto& st = stepAt (col);
+    if (e.y >= rollVT && e.y < rollVT + rollVH)
+    {
+        rollVelDrag = true;
+        rollMouseDrag (e);
+        return;
+    }
+    if (e.y < rollGT || e.y >= rollGT + rollGH || !isPositiveAndBelow (row, int (rows.size()))) return;
+    if (e.mods.isPopupMenu()) { editStep (col); return; }
+    const int pitch = rows[size_t (row)];
+    const int a = page * 16 + col;
+    if (st.on && st.note == pitch)
+    {
+        if (rollSelected == a) { st.on = false; rollSelected = -1; }   // second click deletes
+        else { rollSelected = a; rollDragStep = col; }
+    }
+    else
+    {
+        if (!st.on) st.chord = 0;
+        st.on = true;
+        st.note = pitch;
+        st.gate = 100;
+        rollSelected = a;
+        rollDragStep = col;
+        processor.hardware.sendNoteNow (track, pitch, st.velocity, true);
+        Timer::callAfterDelay (150, [safe = Component::SafePointer<Panel> (self()), pitch]
+            { if (safe != nullptr) safe->processor.hardware.sendNoteNow (safe->track, pitch, 0, false); });
+    }
+    publishSequence();
+    updateRollControls();
+    repaint (33, 35, 807, 385);
+}
+
+void Panel::rollMouseDrag (const MouseEvent& e)
+{
+    const int col = jlimit (0, 15, int ((e.x - rollX0) / rollW));
+    if (rollVelDrag)
+    {
+        auto& st = stepAt (col);
+        if (!st.on) return;
+        st.velocity = jlimit (1, 127, roundToInt (127.0f * float (rollVT + rollVH - e.y) / float (rollVH)));
+        publishSequence();
+        repaint (33, rollVT, 807, rollVH);
+        return;
+    }
+    if (rollDragStep < 0 || col < rollDragStep) return;
+    auto& st = stepAt (rollDragStep);
+    const int gate = jlimit (1, 1600, (col - rollDragStep + 1) * 100);
+    if (gate == st.gate) return;
+    st.gate = gate;
+    publishSequence();
+    repaint (33, 96, 807, 324);
 }
 
 void Panel::clearDrawer()
@@ -2817,6 +3385,7 @@ void Panel::timerCallback()
         refresh();
         if (drawer >= 0) showDrawer (drawer, false);
     }
+    for (Processor::InputNote n; processor.popInputNote (n);) recordNote (n.note, n.velocity, n.on);
     if (drawer == 7) updateChainStatus();
     if (drawer == 8 && printStatus != nullptr && processor.hardware.queuedMessages() > 0)
         printStatus->setText ("Printing... " + String (int (processor.hardware.queuedMessages())) + " messages left. Don't start SEQTRAK yet.",
@@ -2980,7 +3549,7 @@ void Panel::editStep (int index)
     add (141, "MIDI NOTE", 0, 127, step.note);
     add (184, "PROBABILITY (%)", 0, 100, step.probability);
     add (227, "MICRO TIMING (% STEP)", -50, 50, step.micro);
-    add (270, "GATE (% STEP)", 1, 100, step.gate);
+    add (270, "GATE (% STEP)", 1, 1600, step.gate);
     add (313, "FLAM (% STEP)", 0, 50, step.flam);
     buildingDrawer = false;
 }
