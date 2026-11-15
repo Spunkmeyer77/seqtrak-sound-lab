@@ -52,10 +52,41 @@ def table(rows, widths):
                            ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
     return t
 
+def cover(c, d):
+    from reportlab.lib.utils import ImageReader
+    pw, ph = A4
+    INKC = colors.HexColor("#272B2C"); CREAMC = colors.HexColor("#FFEFDA"); DARKC = colors.HexColor("#5A2612")
+    c.saveState()
+    c.setFillColor(INKC); c.rect(0, 0, pw, ph, stroke=0, fill=1)
+    c.setFillColor(ORANGE); c.rect(0, ph - 300, pw, 300, stroke=0, fill=1)
+    logo = ImageReader(f"{FIG}/logo_cream.png"); lw = 120
+    c.drawImage(logo, pw - lw - 36, ph - 36 - lw * 361 / 856, lw, lw * 361 / 856, mask="auto")
+    c.setFillColor(CREAMC); c.setFont("Helvetica-Bold", 50); c.drawString(40, ph - 150, "SEQTRAK EDITOR")
+    c.setFont("Helvetica", 15)
+    c.drawString(42, ph - 178, "Sound editor, step sequencer and pattern expander")
+    c.drawString(42, ph - 197, "for the Yamaha SEQTRAK")
+    c.setFillColor(DARKC); c.setFont("Helvetica-Bold", 12)
+    c.drawString(42, ph - 240, "AU · VST3 · STANDALONE   ·   macOS 12+ · WINDOWS 10/11")
+    panel = ImageReader(f"{FIG}/fig_main_clean.png"); iw = pw - 60
+    c.drawImage(panel, 30, ph - 300 - 18 - iw * 840 / 2800, iw, iw * 840 / 2800)
+    strengths = [("64 PATTERNS", "4 banks × 16: over ten times SEQTRAK's 6 per track"),
+                 ("PATTERN CHAIN", "Arrange whole songs, bar-accurate, looping"),
+                 ("PRINT TO SEQTRAK", "Write your patterns into the hardware"),
+                 ("EVERY SOUND, EVERY PARAMETER", "2,032 presets, Deep Edit, FX, randomizer"),
+                 ("11-TRACK STEP SEQUENCER", "Probability, micro timing, flam, chords"),
+                 ("LIVE HARDWARE CONTROL", "Knobs, mute/solo, tempo sync over USB")]
+    top = ph - 300 - 18 - iw * 840 / 2800 - 30
+    for i, (title, line) in enumerate(strengths):
+        x = 40 + (i % 2) * 265; y = top - (i // 2) * 72
+        c.setFillColor(ORANGE); c.rect(x, y - 44, 4, 44, stroke=0, fill=1)
+        c.setFillColor(ORANGE); c.setFont("Helvetica-Bold", 13); c.drawString(x + 12, y - 16, title)
+        c.setFillColor(CREAMC); c.setFont("Helvetica", 10); c.drawString(x + 12, y - 34, line)
+    c.setFillColor(CREAMC); c.setFont("Helvetica-Bold", 14); c.drawString(40, 70, "USER MANUAL")
+    c.setFont("Helvetica", 11); c.drawString(40, 52, f"Version {V}   ·   Transistor Labs   ·   ticcoross.gumroad.com")
+    c.restoreState()
+
 story = [
-    Paragraph("SEQTRAK Editor", T),
-    Paragraph(f"User Manual · v{V} · Transistor Labs", S),
-    *fig("main", W, "The SEQTRAK Editor panel. The numbers are explained in chapter 6, The Panel at a Glance."),
+    Spacer(1, 1), PageBreak(),
     ch("1. Introduction",
        Paragraph("<b>SEQTRAK Editor powers up your Yamaha SEQTRAK: much more pattern memory (64 patterns instead of 6) "
                  "and a pattern chain for whole songs, plus full sound editing over USB.</b>", B),
@@ -273,7 +304,7 @@ story = [
                  "SEQTRAK is a trademark of Yamaha Corporation; this product is not affiliated with Yamaha.", B)),
 ]
 SimpleDocTemplate(f"{R}/docs/SEQTRAK-Editor-v{V}-User-Manual.pdf", pagesize=A4, leftMargin=20*mm, rightMargin=20*mm,
-                  topMargin=18*mm, bottomMargin=18*mm, title="SEQTRAK Editor User Manual").build(story, onFirstPage=footer, onLaterPages=footer)
+                  topMargin=18*mm, bottomMargin=18*mm, title="SEQTRAK Editor User Manual").build(story, onFirstPage=cover, onLaterPages=footer)
 
 hist = [Paragraph("SEQTRAK Editor", T), Paragraph("Update History · Transistor Labs", S),
     ch("v0.5.2", bl(["MUTE and SOLO now also mute and solo the track on SEQTRAK itself.",

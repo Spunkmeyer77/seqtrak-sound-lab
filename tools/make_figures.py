@@ -41,6 +41,7 @@ d = ImageDraw.Draw(im)
 d.rectangle((90, 500, 440, 548), fill=(201, 204, 207))
 d.text((98, 524), "HAT 2   /   PAGE 1 OF 1", fill=INK, font=F(25), anchor="lm")
 d.rounded_rectangle((424, 504, 462, 542), 4, fill=INK); d.text((443, 523), "1", fill=CREAM, font=F(22), anchor="mm")
+im.copy().save(f"{OUT}/fig_main_clean.png")
 for n, (x, y) in enumerate([(458, 24), (16, 108), (190, 108), (252, 262), (560, 345), (96, 345),
                              (958, 232), (1047, 150), (1152, 182), (1166, 42), (1256, 214),
                              (843, 396), (1384, 18)], 1):
