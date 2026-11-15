@@ -65,7 +65,15 @@ jobs:
         run: |
           V=${{ steps.v.outputs.ver }}
           APP="build/SEQTRAKEditor_artefacts/Release/Standalone/SEQTRAK Editor.app/Contents/MacOS/SEQTRAK Editor"
-          SEQTRAK_SNAPSHOT="$PWD/out/SEQTRAK-Editor-v$V-Preview" perl -e 'alarm 90; exec @ARGV' "$APP" || true
+          OUT="$PWD/out/SEQTRAK-Editor-v$V-Preview"
+          set +e
+          SEQTRAK_SNAPSHOT="$OUT" perl -e 'alarm 90; exec @ARGV' "$APP" > /tmp/snap.log 2>&1
+          echo "direct run exit: $?"; tail -20 /tmp/snap.log
+          if [ ! -f "$OUT-Roll.png" ]; then
+            open -W -n --env SEQTRAK_SNAPSHOT="$OUT" "build/SEQTRAKEditor_artefacts/Release/Standalone/SEQTRAK Editor.app" &
+            for i in $(seq 1 60); do [ -f "$OUT-Roll.png" ] && break; sleep 1; done
+            pkill -f "SEQTRAK Editor.app" || true
+          fi
           ls -la out
       - uses: actions/upload-artifact@v4
         with: { name: macos, path: out/* }

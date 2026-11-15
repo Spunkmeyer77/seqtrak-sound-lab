@@ -7,7 +7,7 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image, Kee
                                 Table, TableStyle, PageBreak)
 
 R = sys.argv[1]
-V = "0.5.2"
+V = "0.6.0"
 FIG = "/home/claude/figs"
 ORANGE = colors.HexColor("#E8743B")
 GREY = colors.HexColor("#3A3D40")
@@ -156,7 +156,7 @@ story = [
     ch("6. The Panel at a Glance",
        *fig("main", W),
        nl(["<b>Top bar:</b> LENGTH (steps of the selected track), FOLLOW (pads follow the playing page; orange = on), "
-           "HELP (hover help; orange = on), window size, ABOUT.",
+           "PADS / ROLL (step pads or piano roll), HELP (hover help; orange = on), window size, ABOUT.",
            "<b>Left strip:</b> VOL+ / VOL− (selected track volume), DELETE (clear the track's steps), MUTE, SOLO, PAGE, PLAY (standalone).",
            "<b>Track knobs:</b> ALL, the seven drum tracks, SYNTH 1, SYNTH 2, DX, SAMPLER. Click a name to select the track "
            "(thin dark frame); turn the knob for its volume. LEDs: white = selected, amber = muted, green = solo.",
@@ -233,6 +233,34 @@ story = [
            "<b>MICRO TIMING</b> −50 to +50% of a step: play early or late.",
            "<b>GATE</b> 1–100% of a step: note length.",
            "<b>FLAM</b> 0–50% of a step: adds a softer grace note before the hit."])),
+    ch("Piano Roll (Synth 1, Synth 2, DX)",
+       Paragraph("Press <b>ROLL</b> in the top bar to swap the step pads for a piano roll; <b>PADS</b> goes back. The roll uses the "
+                 "whole left section and shows two octaves.", B),
+       bl(["<b>Track tabs</b> SYNTH 1 · SYNTH 2 · DX switch the part you edit (the selected tab has the thin dark frame). "
+           "The orange section and the step editor follow the same track. Each part remembers its octave.",
+           "<b>Page numbers</b> next to the tabs are the same pages as the pads.",
+           "<b>Add a note:</b> click a cell. <b>Lengthen:</b> keep the button held and drag to the right (up to 16 steps). "
+           "<b>Select:</b> click a note (cream outline). <b>Delete:</b> click the selected note again. "
+           "<b>Step editor:</b> right-click or double-click a note (probability, micro timing, flam...).",
+           "<b>One note per step</b>: clicking another pitch in the same column moves the note. Chords come from the chord system below.",
+           "<b>CHORD</b> box: the chord of the selected note (Off, Major, Minor, 7, Maj7, m7, m9, Sus2, Sus4, Add9, Dim, Aug, Power). "
+           "Chord tones show as dashed purple outlines.",
+           "<b>SCALE LOCK</b> with the key and scale boxes shows only the notes of that scale. <b>OCT - / OCT +</b> move the two octaves; "
+           "C rows are orange. A note outside the view shows as a small purple mark at the top or bottom of its column.",
+           "<b>VEL</b> lane at the bottom: drag up or down on a column to set the note's velocity.",
+           "Click the piano keys on the left to hear a note on SEQTRAK."])),
+    ch("Recording Notes: Step and Live",
+       Paragraph("At the right of the status line (pads) or the roll's top row: <b>STEP | LIVE</b> chooses the mode, "
+                 "<b>REC</b> arms recording (orange). Play from a MIDI keyboard through your DAW, or from the computer keyboard.", B),
+       bl(["<b>STEP:</b> a cream cursor marks the step. Each note fills it and moves on; notes played together become a chord "
+           "(matched to the chord types). <b>REST</b> / Space skips a step, <b>BACK</b> / Backspace goes back. Works while stopped.",
+           "<b>LIVE:</b> while the pattern plays, notes land on the playing step; how long you hold a note sets its length. "
+           "Every loop adds to what's there.",
+           "<b>Computer keyboard:</b> A W S E D F T G Y H U J K = C to C, Z / X = octave down / up. Click the editor first so it has "
+           "the keyboard focus (in Ableton, turn off Live's computer MIDI keyboard if it catches the keys).",
+           "<b>MIDI keyboard:</b> notes sent to the plugin's track in your DAW also play the selected track on SEQTRAK, so you hear "
+           "what you play even when not recording.",
+           "On drum tracks any key records a hit (in the pads view)."])),
     ch("Flam and Chords",
        *fig("flamchord", 150*mm),
        bl(["<b>Flam:</b> a grace note at 60% of the step's velocity, placed before the hit by the FLAM amount. 10–20% is a "
@@ -289,7 +317,9 @@ story = [
         "<b>HELP</b> (top bar, off by default): when on (orange), rest the pointer on any control to see what it does.",
         "Double-click a preset to load it; double-click a Deep Edit fader to reset it.",
         "Drag across the pads to paint steps; hold a pad to open its step editor.",
-        "Click page numbers to change page; FOLLOW turns off so you can edit while it plays."])),
+        "Click page numbers to change page; FOLLOW turns off so you can edit while it plays.",
+        "In the roll: click to add, drag to lengthen, click again to delete, right-click to edit; drag in VEL for velocity.",
+        "Record from the computer keyboard: A W S E D F T G Y H U J K, Z / X for octaves, Space = rest, Backspace = back."])),
     ch("17. Troubleshooting", bl([
         "<b>Nothing happens on SEQTRAK:</b> it isn't connected yet. Follow chapter 4 (ports, then IDENTIFY). The top label must read USB MIDI.",
         "<b>IDENTIFY fails:</b> check the USB cable carries data, both ports are SEQTRAK and the device number matches. On Windows, the DAW must not be using the SEQTRAK ports.",
@@ -307,6 +337,11 @@ SimpleDocTemplate(f"{R}/docs/SEQTRAK-Editor-v{V}-User-Manual.pdf", pagesize=A4, 
                   topMargin=18*mm, bottomMargin=18*mm, title="SEQTRAK Editor User Manual").build(story, onFirstPage=cover, onLaterPages=footer)
 
 hist = [Paragraph("SEQTRAK Editor", T), Paragraph("Update History · Transistor Labs", S),
+    ch("v0.6.0", bl(["Piano roll for Synth 1, Synth 2 and DX: two octaves, track tabs, scale lock, octave buttons, chord box, velocity lane, long notes (up to 16 steps).",
+        "Step record and live record from a MIDI keyboard or the computer keyboard (STEP | LIVE switch and REC button); notes played together become chords.",
+        "Notes played into the plugin now play the selected track on SEQTRAK (MIDI thru).",
+        "Gate can now be up to 1600% of a step (16 steps).",
+        "Manual: new cover with the editor's strengths; Piano Roll and Recording chapters."])),
     ch("v0.5.2", bl(["MUTE and SOLO now also mute and solo the track on SEQTRAK itself.",
         "Print to SEQTRAK now prints the drum tracks too (they are written by step record, the method SEQTRAK accepts for drum parts).",
         "Deeper user manual: illustrated guides with numbered callouts for the panel, drawers, step editor, patterns, chain and print, concept diagrams, and detailed System Requirements."])),
