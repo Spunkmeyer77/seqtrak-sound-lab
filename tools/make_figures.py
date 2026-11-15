@@ -18,7 +18,7 @@ def callout(d, x, y, n, r=17):
 def inpaint(im, test):
     px = im.load(); w, h = im.size
     mask = [[test(px[x, y]) for x in range(w)] for y in range(h)]
-    for _ in range(12):
+    for _ in range(30):
         changed = False
         for y in range(h):
             for x in range(w):
@@ -34,8 +34,23 @@ def inpaint(im, test):
 
 # ---------- 1. Main panel from the real screenshot ----------
 im = Image.open(f"{OUT}/raw_main.png").convert("RGB").resize((2800, 840))
-cyan = lambda c: c[2] > 170 and c[1] > 170 and c[0] < 130
-region = im.crop((2530, 380, 2760, 840)); inpaint(region, cyan); im.paste(region, (2530, 380))
+cyan = lambda c: (c[1] - c[0] > 40 and c[2] - c[0] > 40) or (c[2] > 150 and c[1] > 150 and c[0] < 150)
+# replace the REPEATER column (annotated in this screenshot) with the clean one from another screenshot
+clean = Image.open(f"{OUT}/raw_chordpage.png").convert("RGB").resize((2800, 840))
+patch = clean.crop((2515, 360, 2730, 760))
+ref_a = im.crop((2470, 380, 2505, 800)); ref_b = clean.crop((2470, 380, 2505, 800))   # same plain area in both shots
+import statistics
+def med(img, ch): return statistics.median(list(img.getchannel(ch).getdata()))
+gain = [med(ref_a, ch) / max(1, med(ref_b, ch)) for ch in range(3)]
+pp = patch.load()
+for yy in range(patch.size[1]):
+    for xx in range(patch.size[0]):
+        c = pp[xx, yy]
+        if sum(c) < 600:   # recolour the orange; leave cream text and thumb as they are
+            pp[xx, yy] = tuple(max(0, min(255, int(c[k] * gain[k]))) for k in range(3))
+        else:
+            pp[xx, yy] = (255, 239, 218)
+im.paste(patch, (2515, 360))
 d = ImageDraw.Draw(im)
 # update status line to current UI: "PAGE 1 OF 1" + page box
 d.rectangle((90, 500, 440, 548), fill=(201, 204, 207))
