@@ -22,7 +22,7 @@ const StringArray sections { "SOUND", "PITCH", "MONO/POLY", "CHORD", "PAN", "VOL
 const StringArray drawers { "PRESETS", "DEEP EDIT", "TRACK FX", "RANDOM", "PATTERNS", "CONNECTION" };
 const std::array<StringArray, 20> knobLabels {{
     {"Preset", "Bank", "Category", "Variation"}, {"Coarse", "Fine", "Glide", "Bend"},
-    {"Mode", "Legato", "Glide", "Priority"}, {"Root", "Type", "Voicing", "Spread"},
+    {"Mode", "Legato", "Glide", "Priority"}, {"Mode", "Key", "Scale"},
     {"Pan"}, {"Volume"}, {"Attack"}, {"Decay", "Sustain", "Release"},
     {"Offset", "Velocity", "Probability", "Note"}, {"Cutoff", "EG Depth", "Attack", "Decay"},
     {"Resonance"}, {"Send", "Time", "Damping", "Width"}, {"Send", "Time", "Feedback", "Tone"},
@@ -35,6 +35,8 @@ const std::array<StringArray, 20> knobLabels {{
 // MIDI Control Change for Sound Design knob `knob` in panel section `section`
 // on track `track` (0-10), from the SEQTRAK Data List CC map. -1 = no CC exists
 // (those knobs are dimmed; use Deep Edit for them).
+constexpr int keyControl = 1000, scaleControl = 1001;   // not CCs: sent as SysEx parameter changes
+
 int quickControl (int section, int knob, int track)
 {
     const bool drum = track < 7, synth = track >= 7 && track <= 9;
@@ -42,6 +44,10 @@ int quickControl (int section, int knob, int track)
     {
         case 1:  if (knob == 0 && drum) return 25; if (knob == 2 && synth) return 5; return -1;   // PITCH: drum pitch, glide
         case 2:  return knob == 0 && synth ? 26 : -1;                                             // MONO/POLY/CHORD
+        case 3:  if (knob == 0) return synth ? 26 : -1;                                           // CHORD: mode (2 = chord)
+                 if (knob == 1) return keyControl;                                                // project key (SysEx)
+                 if (knob == 2) return scaleControl;                                              // project scale (SysEx)
+                 return -1;
         case 4:  return knob == 0 ? 10 : -1;                                                      // PAN
         case 5:  return knob == 0 ? 7 : -1;                                                       // VOLUME
         case 6:  return knob == 0 ? 73 : -1;                                                      // ATTACK
@@ -762,7 +768,9 @@ public:
             sentQuick[size_t (k)] = v;
             const int cc = quickControl (section, k, track);
             if (cc < 0) continue;
-            hardware.scheduleCC (track, cc, cc == 26 ? jmin (2, v * 3 / 128) : v, time);
+            if (cc == keyControl)   hardware.scheduleControl ({ 0x30, 0x40, 0x7f }, 0x40 + jmin (11, v * 12 / 128), 1, time); // Key C..B
+            else if (cc == scaleControl) hardware.scheduleControl ({ 0x30, 0x40, 0x7e }, jmin (7, v * 8 / 128), 1, time);   // Scale 1-8
+            else hardware.scheduleCC (track, cc, cc == 26 ? jmin (2, v * 3 / 128) : v, time);
         }
         const int level = value (fxLevelParameter);
         if (level != sentFxLevel)
@@ -941,7 +949,17 @@ private:
         result.onValueChange = [this, &result]
         {
             if (result.isMouseButtonDown())
-                readout = result.getName().toUpperCase() + "  " + String (int (result.getValue()));
+            {
+                const auto name = result.getName().toUpperCase();
+                const int v = int (result.getValue());
+                static const StringArray modes { "MONO", "POLY", "CHORD" };
+                static const StringArray keys { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+                String shown = String (v);
+                if (name == "MODE" && (section == 2 || section == 3)) shown = modes[jmin (2, v * 3 / 128)];
+                else if (name == "KEY" && section == 3) shown = keys[jmin (11, v * 12 / 128)];
+                else if (name == "SCALE" && section == 3) shown = "SCALE " + String (jmin (7, v * 8 / 128) + 1);
+                readout = name + "  " + shown;
+            }
             repaint();
         };
         return result;
