@@ -729,6 +729,13 @@ private:
 
     int getNumRows() override { return int (matches.size()); }
     void paintListBoxItem (int row, Graphics& g, int w, int h, bool selected) override;
+    // Double-click (or Return) on a preset loads it, same as the LOAD button.
+    void listBoxItemDoubleClicked (int, const MouseEvent&) override { triggerPresetLoad(); }
+    void returnKeyPressed (int) override { triggerPresetLoad(); }
+    void triggerPresetLoad()
+    {
+        if (presetLoad != nullptr && presetLoad->isEnabled()) presetLoad->triggerClick();
+    }
     void loadPreset (bool pad);
     void toggleCompare();
     void randomize (int t);
