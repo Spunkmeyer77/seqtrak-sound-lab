@@ -893,7 +893,7 @@ private:
     void connectionDrawer();
     void about();
     void editStep (int step);
-    void filterPresets();
+    void filterPresets (bool restore = false);
     void timerCallback() override;
     Step& stepAt (int step) { return grid[size_t (track)][size_t (page)][size_t (step)]; }
 
@@ -901,6 +901,15 @@ private:
     void paintListBoxItem (int row, Graphics& g, int w, int h, bool selected) override;
     // Double-click (or Return) on a preset loads it, same as the LOAD button.
     void listBoxItemDoubleClicked (int, const MouseEvent&) override { triggerPresetLoad(); }
+    // Remember the highlighted preset per track, so the browser comes back where you left it.
+    void selectedRowsChanged (int row) override
+    {
+        if (restoringPresets || !isPositiveAndBelow (row, int (matches.size()))) return;
+        presetViews[size_t (track)].preset = matches[size_t (row)];
+    }
+    struct PresetView { String query, category; int preset = -1; };
+    std::array<PresetView, 11> presetViews;
+    bool restoringPresets = false;
     void returnKeyPressed (int) override { triggerPresetLoad(); }
     void triggerPresetLoad()
     {
@@ -1392,17 +1401,27 @@ void Panel::presetDrawer()
     auto& panel = *drawerPanel;
     searchBox = &make<TextEditor> (panel, { 16, 49, 265, 28 });
     searchBox->setTextToShowWhenEmpty ("Search by name or number", ink.withAlpha (0.65f));
-    searchBox->onTextChange = [this] { filterPresets(); };
     const auto engine = engineFor (track);
     presetCategories = { "All categories" };
     for (const auto& item : *presets.getArray())
         if (item["engine"].toString() == engine)
             presetCategories.addIfNotAlreadyThere (item["category"].toString());
-    categoryBox = &combo (panel, { 293, 49, 216, 28 }, presetCategories, 0);
-    categoryBox->onChange = [this] { filterPresets(); };
+    const auto& view = presetViews[size_t (track)];
+    categoryBox = &combo (panel, { 293, 49, 216, 28 }, presetCategories, jmax (0, presetCategories.indexOf (view.category)));
+    categoryBox->onChange = [this]
+    {
+        presetViews[size_t (track)].category = categoryBox->getText();
+        filterPresets();
+    };
+    searchBox->setText (view.query, false);
+    searchBox->onTextChange = [this]
+    {
+        presetViews[size_t (track)].query = searchBox->getText();
+        filterPresets();
+    };
     presetList = &make<ListBox> (panel, { 16, 88, 493, 225 }, "Factory presets", static_cast<ListBoxModel*> (this));
     presetList->setRowHeight (25);
-    filterPresets();
+    filterPresets (true);
     presetStatus = &label (panel, { 16, 317, 489, 19 }, processor.hardware.verified ? processor.hardware.status
         : "2,032 DRUM / SYNTH / DX SOUNDS + 392 FACTORY SAMPLES", darkOrange);
     if (track == 10)
@@ -1427,7 +1446,7 @@ void Panel::presetDrawer()
     presetLoad->setEnabled (!processor.hardware.busy());
 }
 
-void Panel::filterPresets()
+void Panel::filterPresets (bool restore)
 {
     const auto query = searchBox->getText().trim();
     const auto category = categoryBox->getSelectedItemIndex();
@@ -1443,8 +1462,22 @@ void Panel::filterPresets()
             matches.push_back (i);
     }
     presetList->updateContent();
+    restoringPresets = true;
     presetList->deselectAllRows();
-    if (!matches.empty()) presetList->selectRow (0);
+    int row = 0;
+    if (restore)
+    {
+        const auto it = std::find (matches.begin(), matches.end(), presetViews[size_t (track)].preset);
+        if (it != matches.end()) row = int (it - matches.begin());
+    }
+    if (!matches.empty())
+    {
+        presetList->selectRow (row);
+        presetList->scrollToEnsureRowIsOnscreen (jmin (int (matches.size()) - 1, row + 4));
+        presetList->scrollToEnsureRowIsOnscreen (row);
+    }
+    restoringPresets = false;
+    if (!matches.empty() && !restore) presetViews[size_t (track)].preset = matches[size_t (row)];
     presetList->repaint();
 }
 
