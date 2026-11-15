@@ -1189,7 +1189,20 @@ void Panel::makeMain()
     mode.setButtonText (processor.fxSingle.load() ? "SINGLE" : "MASTER");
     hostKnob ({ 1072, 189, 66, 173 }, "fxlevel", "FX Level", true, Slider::LinearVertical);
     hostKnob ({ 1160, 227, 93, 134 }, "highpass", "High Pass", true, Slider::LinearVertical);
-    hostKnob ({ 1261, 227, 94, 134 }, "repeat", "Repeater", true, Slider::LinearVertical);
+    {
+        // REPEATER has 5 positions on SEQTRAK: the fader snaps to them for easy mouse editing.
+        auto& repeater = hostKnob ({ 1261, 227, 94, 134 }, "repeat", "Repeater", true, Slider::LinearVertical);
+        auto previous = repeater.onValueChange;
+        repeater.onValueChange = [&repeater, previous]
+        {
+            static constexpr int stops[] { 0, 32, 64, 96, 127 };
+            const int v = int (repeater.getValue());
+            int nearest = stops[0];
+            for (const int s : stops) if (std::abs (s - v) < std::abs (nearest - v)) nearest = s;
+            if (nearest != v) { repeater.setValue (nearest, sendNotificationSync); return; }
+            if (previous) previous();
+        };
+    }
 
     for (int i = 0; i < drawers.size(); ++i)
         navigation[size_t (i)] = &button (*this, { 849 + i * 85, 384, 82, 26 }, drawers[i],
