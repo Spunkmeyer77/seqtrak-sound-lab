@@ -55,6 +55,55 @@ int quickControl (int section, int knob, int track)
     }
 }
 
+// Hover help shown when HELP is on, keyed by control text.
+String helpFor (const String& text)
+{
+    static const std::map<String, String> help {
+        { "HELP", "Turn hover help on or off." },
+        { "ABOUT", "Version, contact and website." },
+        { "FOLLOW", "Step pads follow the playing page." },
+        { "VOL+", "Raise the selected track's volume." }, { "VOL-", "Lower the selected track's volume." },
+        { "DELETE", "Clear all steps of the selected track." },
+        { "MUTE", "Mute the selected track in the plugin sequencer." },
+        { "SOLO", "Solo the selected track in the plugin sequencer." },
+        { "PAGE", "Next page of 16 steps (up to 8 pages)." },
+        { "PLAY", "Start or stop the sequencer (standalone; in a DAW use the DAW transport)." },
+        { "USB", "Open Connection: choose SEQTRAK's USB ports and press IDENTIFY." },
+        { "MIDI", "Open Connection: MIDI ports and options." },
+        { "BPM+", "Raise tempo (standalone)." }, { "BPM-", "Lower tempo (standalone)." },
+        { "SWING", "Set swing, 50-75%." }, { "PROJECT", "Open the Patterns drawer." },
+        { "PRESETS", "Browse and load SEQTRAK sounds. Double-click to load." },
+        { "DEEP EDIT", "Edit every sound parameter. Double-click a fader to reset it." },
+        { "TRACK FX", "Read, choose and edit the track's effect." },
+        { "RANDOM", "Randomize the track's sound; lock what you want to keep." },
+        { "PATTERNS", "16 pattern slots, Program Change switching, chain, import/export." },
+        { "CONNECTION", "MIDI ports, IDENTIFY, reading hardware, tempo and options." },
+        { "CLOSE", "Close this drawer." }, { "SNAPS", "Save and recall voice snapshots." },
+        { "CHAIN", "Pattern chain: play slots in order, each for a number of bars." },
+        { "CHAIN ON", "Run the chain when playback starts." },
+        { "LOOP", "Repeat the chain from step 1 at the end." },
+        { "COPY", "Copy the selected slot." }, { "PASTE", "Paste into the selected slot." },
+        { "CLEAR", "Clear the selected slot (or the chain)." }, { "SWITCH", "Switch to the selected slot." },
+        { "RENAME", "Rename the selected slot." },
+        { "IMPORT SLOT", "Load one slot from a JSON file." }, { "EXPORT SLOT", "Save one slot as a JSON file." },
+        { "IMPORT BANK", "Load all 16 slots from a JSON file." }, { "EXPORT BANK", "Save all 16 slots as a JSON file." },
+        { "READ HARDWARE", "Read this track's sound from SEQTRAK." },
+        { "HOLD TO AUDITION", "Hold to play a test note on SEQTRAK." },
+        { "LOCK", "Keep this parameter when randomizing." },
+        { "LOAD ON TRACK", "Load the highlighted sound on the selected track." },
+        { "LOAD ON PAD", "Load the highlighted sample on the chosen pad." },
+        { "ACTIVE", "Turn this step on or off." },
+        { "MASTER", "FX LEVEL controls the master effect. Click for SINGLE." },
+        { "SINGLE", "FX LEVEL controls the selected track's effect. Click for MASTER." },
+        { "ALL", "Mixer page for all tracks." },
+    };
+    if (const auto it = help.find (text); it != help.end()) return it->second;
+    if (text.startsWith ("LENGTH")) return "Set the selected track's length in steps (1-128).";
+    if (tracks.contains (text)) return "Select this track. The knob above sets its volume on SEQTRAK.";
+    if (sections.contains (text)) return "Show this parameter page on the four orange knobs.";
+    return {};
+}
+
 Font face (float size, int flags = Font::plain, float scale = 0.9f)
 {
     auto font = Font (FontOptions (size, flags));
@@ -750,7 +799,7 @@ public:
 using seqtrak::Step;
 using seqtrak::Grid;
 
-class Panel final : public Component, private Timer, private ListBoxModel
+class Panel final : public Component, public TooltipClient, private Timer, private ListBoxModel
 {
 public:
     Panel* self() noexcept { return this; }
@@ -800,6 +849,16 @@ public:
     void mouseDown (const MouseEvent&) override;
     void mouseUp (const MouseEvent&) override;
     void mouseDrag (const MouseEvent&) override;
+    String getTooltip() override
+    {
+        const auto p = getMouseXYRelative();
+        if (p.x >= 40 && p.x < 840 && p.y >= 283 && p.y < 405)
+            return "Step pads. Click a top pad to toggle; drag to paint many steps; hold or right-click "
+                   "(or click the lower pad) to edit note, velocity, probability, timing, gate and flam.";
+        if (p.x >= 1160 && p.x < 1360 && p.y >= 30 && p.y < 200)
+            return "Display: current sound, pattern and values while you turn a control.";
+        return {};
+    }
     bool painting = false, paintValue = false;
     int lastPaint = -1;
     int heldPad = -1, flashedPad = -1;
@@ -832,6 +891,7 @@ private:
                         std::function<void()> action, bool warm = true)
     {
         auto& b = make<TextButton> (parent, area, name);
+        b.setTooltip (helpFor (name));
         b.setColour (TextButton::buttonColourId, warm ? recess : inset);
         b.setColour (TextButton::buttonOnColourId, warm ? darkOrange : ink);
         b.setColour (TextButton::textColourOffId, warm ? cream : ink);
@@ -965,7 +1025,7 @@ private:
         double started = 0;
     } drawerSlide;
     Processor& processor;
-    TooltipWindow tooltip { this, 450 };
+    std::unique_ptr<TooltipWindow> tooltip;   // exists only while HELP is on
     std::vector<std::unique_ptr<Component>> owned, temporary;
     std::vector<std::unique_ptr<AudioProcessorValueTreeState::SliderAttachment>> attachments;
     std::array<TextButton*, 12> trackButtons {};
@@ -1116,7 +1176,15 @@ void Panel::makeMain()
         refresh();
     }, false);
     button (*this, { 726, 12, 100, 24 }, "ABOUT", [this] { about(); }, false);
+    auto& help = button (*this, { 565, 12, 70, 24 }, "HELP", [] {}, false);
+    help.setClickingTogglesState (true);
+    help.onClick = [this, &help]
+    {
+        if (help.getToggleState()) tooltip = std::make_unique<TooltipWindow> (this, 350);
+        else tooltip.reset();
+    };
     auto& scale = combo (*this, { 645, 12, 74, 24 }, { "75%", "100%", "125%", "150%" }, 1);
+    scale.setTooltip ("Window size.");
     scale.onChange = [this, &scale]
     {
         if (onScale) onScale (75 + scale.getSelectedItemIndex() * 25);
