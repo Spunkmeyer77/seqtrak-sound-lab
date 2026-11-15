@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version" FORCE)
 endif()
-project(SEQTRAKEditor VERSION 0.5.0 LANGUAGES C CXX)
+project(SEQTRAKEditor VERSION 0.5.1 LANGUAGES C CXX)
 
 set(SEQTRAK_JUCE_DIR "" CACHE PATH "Optional path to a JUCE 8.0.8 checkout")
 if(SEQTRAK_JUCE_DIR)
