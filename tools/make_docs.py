@@ -277,6 +277,7 @@ SimpleDocTemplate(f"{R}/docs/SEQTRAK-Editor-v{V}-User-Manual.pdf", pagesize=A4, 
 
 hist = [Paragraph("SEQTRAK Editor", T), Paragraph("Update History · Transistor Labs", S),
     ch("v0.5.2", bl(["MUTE and SOLO now also mute and solo the track on SEQTRAK itself.",
+        "Print to SEQTRAK now prints the drum tracks too (they are written by step record, the method SEQTRAK accepts for drum parts).",
         "Deeper user manual: illustrated guides with numbered callouts for the panel, drawers, step editor, patterns, chain and print, concept diagrams, and detailed System Requirements."])),
     ch("v0.5.1", bl(["Step editor stays open while playing: pattern-chain or Program Change switches no longer close it; it keeps editing its own pattern (shown in its title) and the panel catches up when you close it.",
         "Pages reworked: page numbers you can click, PAGE cycles only the pages a track uses, \"PAGE x OF n\" shows the real count, FOLLOW lights orange and turns off when you pick a page.",

@@ -2557,11 +2557,21 @@ void Panel::printToSeqtrak()
             const int gate = jlimit (1, 16383, roundToInt (step.gate * 1.2));
             std::array<int, 5> chord {};
             const int voices = t >= 7 && t <= 9 ? seqtrak::stepNotes (step, chord) : (chord[0] = step.note, 1);
+            if (t < 7)
+            {
+                // Drum tracks: SEQTRAK takes notes by step record (70 tt 00: step, note, velocity, gate).
+                hw.queueSysex (0x70, t, 0, { s, step.note, step.velocity, gate >> 7, gate & 127 });
+                if (step.micro != 0)   // micro timing: 60 = centre of the step, 0-119
+                    hw.queueSysex (0x70, 0x10 | t, 0, { s, jlimit (0, 119, 60 + roundToInt (step.micro * 1.2)) });
+                // A drum part re-typed to SYNTH ignores step record but accepts the drum piano roll.
+                hw.queueSysex (0x22, t << 4, 0, { time >> 7, time & 127, 0, step.note, step.velocity, 0, gate >> 7, gate & 127 });
+                ++notesWritten;
+                continue;
+            }
             for (int v = 0; v < voices; ++v)
             {
                 const std::vector<int> event { time >> 7, time & 127, 0, chord[size_t (v)], step.velocity, 0, gate >> 7, gate & 127 };
-                if (t < 7) hw.queueSysex (0x22, t << 4, 0, event);          // drum piano roll (global part 0-6)
-                else       hw.queueSysex (0x72, (t - 7) << 4, 0, event);    // synth piano roll (local index 0-3)
+                hw.queueSysex (0x72, (t - 7) << 4, 0, event);    // synth piano roll (local index 0-3)
                 ++notesWritten;
             }
         }
