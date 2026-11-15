@@ -1220,6 +1220,9 @@ void Panel::makeMain()
     button (*this, { 726, 12, 100, 24 }, "ABOUT", [this] { about(); }, false);
     auto& help = button (*this, { 565, 12, 70, 24 }, "HELP", [] {}, false);
     help.setClickingTogglesState (true);
+    // On state: SEQTRAK orange with cream text, so it reads clearly (the default dark grey hid the label).
+    help.setColour (TextButton::buttonOnColourId, orange);
+    help.setColour (TextButton::textColourOnId, cream);
     help.onClick = [this, &help]
     {
         if (help.getToggleState()) tooltip = std::make_unique<TooltipWindow> (this, 350);
