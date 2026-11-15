@@ -2046,10 +2046,12 @@ void Panel::patternDrawer()
     quant.onChange = [this, &quant] { processor.bank.quantize.store (jmax (0, quant.getSelectedItemIndex())); };
     auto& sound = combo (panel, { 172, 240, 147, 26 }, { "None", "Presets", "Full" }, bank.soundMode.load());
     sound.onChange = [this, &sound] { processor.bank.soundMode.store (jmax (0, sound.getSelectedItemIndex())); };
-    auto& send = button (panel, { 328, 240, 181, 26 }, "SEND UI PC TO HOST", [this]
+    auto& send = button (panel, { 328, 240, 181, 26 }, "PC OUT TO DAW", [this]
         { processor.bank.sendProgram.store (!processor.bank.sendProgram.load()); });
     send.setClickingTogglesState (true);
     send.setToggleState (bank.sendProgram.load(), dontSendNotification);
+    send.setTooltip ("When on, clicking a slot also sends a Program Change on the plugin's MIDI output to your DAW, "
+                     "so you can record slot changes in a clip. Nothing is sent to SEQTRAK.");
     for (int i = 0; i < 4; ++i)
     {
         const bool whole = i >= 2, exporting = i % 2 == 1;
@@ -2061,10 +2063,20 @@ void Panel::patternDrawer()
     label (panel, { 147, 311, 135, 16 }, "TRACK OVERRIDE", darkOrange);
     label (panel, { 287, 311, 112, 16 }, "SEQTRAK PATTERN", darkOrange);
     auto& mode = combo (panel, { 16, 329, 125, 24 }, { "PLUGIN", "HARDWARE" }, int (bank.hardwareMode.load()));
-    mode.onChange = [this, &mode] { processor.bank.hardwareMode.store (mode.getSelectedItemIndex() == 1); repaint(); };
+    mode.onChange = [this, &mode]
+    {
+        processor.bank.hardwareMode.store (mode.getSelectedItemIndex() == 1);
+        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
+            { if (safe != nullptr && safe->drawer == 4) safe->showDrawer (4, false); });
+    };
     auto& route = combo (panel, { 147, 329, 134, 24 }, { "Follow mode", "PLUGIN", "HARDWARE" },
                          bank.trackModes[size_t (track)].load());
-    route.onChange = [this, &route] { processor.bank.trackModes[size_t (track)].store (jmax (0, route.getSelectedItemIndex())); repaint(); };
+    route.onChange = [this, &route]
+    {
+        processor.bank.trackModes[size_t (track)].store (jmax (0, route.getSelectedItemIndex()));
+        MessageManager::callAsync ([safe = Component::SafePointer<Panel> (self())]
+            { if (safe != nullptr && safe->drawer == 4) safe->showDrawer (4, false); });
+    };
     seqtrak::HardwareTrack hardwareTrack;
     {
         const std::lock_guard<std::mutex> guard (bank.lock);
@@ -2078,7 +2090,7 @@ void Panel::patternDrawer()
         b.slots[size_t (slotTarget)].sequence.hardware[size_t (track)].pattern = jmax (0, hwPattern.getSelectedItemIndex());
         b.sequenceRevision.fetch_add (1);
     };
-    auto& hwMute = button (panel, { 400, 329, 109, 24 }, "HW MUTE", [this]
+    auto& hwMute = button (panel, { 400, 329, 109, 24 }, "MUTE ON SEQTRAK", [this]
     {
         auto& b = processor.bank;
         const std::lock_guard<std::mutex> guard (b.lock);
@@ -2088,6 +2100,17 @@ void Panel::patternDrawer()
     });
     hwMute.setClickingTogglesState (true);
     hwMute.setToggleState (hardwareTrack.muted, dontSendNotification);
+    // These only act when this track is played by SEQTRAK's own sequencer (HARDWARE mode).
+    const bool hardwareTrackMode = seqtrak::usesHardware (bank, track);
+    for (Component* c : { static_cast<Component*> (&hwPattern), static_cast<Component*> (&hwMute) })
+    {
+        c->setEnabled (hardwareTrackMode);
+        c->setAlpha (hardwareTrackMode ? 1.0f : 0.4f);
+    }
+    const String hwTip = hardwareTrackMode ? String()
+        : String ("Only used in HARDWARE mode: set Sequencer Mode or this track's override to HARDWARE.");
+    hwPattern.setTooltip (hardwareTrackMode ? "SEQTRAK internal pattern (1-6) this slot plays on this track" : hwTip);
+    hwMute.setTooltip (hardwareTrackMode ? "Mute this track on SEQTRAK when this slot is launched" : hwTip);
     label (panel, { 16, 354, 493, 22 }, patternStatus, darkOrange);
 }
 
