@@ -628,6 +628,8 @@ public:
     void mouseDown (const MouseEvent&) override;
     void mouseUp (const MouseEvent&) override;
     int heldPad = -1, flashedPad = -1;
+    int64 lastFingerprint = -1;
+    int safetyTicks = 0;
     double padFlashUntil = 0;
     unsigned padPress = 0;
     void closeDrawer()
@@ -972,6 +974,10 @@ void Panel::paint (Graphics& g)
     fill (ink.withAlpha (0.23f), { 602, 49, 1, 212 });
     fill (inset, { 34, 246, 806, 32 });
     fill (ink, { 34, 278, 806, 142 });
+    // 4/4 beat marks on steps 1, 5, 9 and 13, in the gap between the two pad rows.
+    g.setColour (Colour (0xff62686a));
+    for (int beat = 0; beat < 4; ++beat)
+        g.fillRoundedRectangle (float (40 + beat * 200 + 15), 343.0f, 16.0f, 3.0f, 1.0f);
     text (ink, "SEQTRAK", { 49, 6, 141, 32 }, 29, Font::bold | Font::italic);
     text (ink.withAlpha (0.76f), "EDITOR", { 173, 10, 90, 29 }, 16, Font::bold | Font::italic);
     text (ink.withAlpha (0.65f), "DRUMS", { 48, 38, 100, 17 }, 11);
@@ -2159,13 +2165,24 @@ void Panel::timerCallback()
         refresh();
         if (drawer >= 0) showDrawer (drawer, false);
     }
-    repaint (33, 35, 807, 208);
-    repaint (1169, 38, 180, 159);
     bpm = roundToInt (bank.displayTempo.load());
     playing = bank.playing.load();
     head = bank.heads[size_t (track)].load();
     if (bank.follow.load() && head >= 0 && editedStep < 0 && heldPad < 0) page = head / 16;
-    repaint (33, 246, 807, 174);
+    // Only repaint when something visible changed (plus a slow safety refresh),
+    // instead of redrawing the whole panel 30 times a second.
+    int64 fingerprint = (int64 (bpm) << 40) ^ (int64 (head + 1) << 24) ^ (int64 (page) << 16) ^ (int64 (track) << 8)
+                      ^ (int64 (playing) << 4) ^ (int64 (flashedPad + 1) << 52) ^ (int64 (editedStep + 1) << 32);
+    for (int t = 0; t < 11; ++t)
+        fingerprint ^= (int64 (mix[size_t (t)][0]) | (int64 (mix[size_t (t)][1]) << 1)) << (t * 2);
+    if (fingerprint != lastFingerprint || ++safetyTicks >= 8)
+    {
+        lastFingerprint = fingerprint;
+        safetyTicks = 0;
+        repaint (33, 35, 807, 208);
+        repaint (1169, 38, 180, 159);
+        repaint (33, 246, 807, 174);
+    }
     if (hardwareRevision != processor.hardware.revision && !isMouseButtonDownAnywhere())
     {
         hardwareRevision = processor.hardware.revision;
@@ -2291,11 +2308,12 @@ void Panel::editStep (int index)
         fader.setTextBoxStyle (Slider::TextBoxRight, false, 55, 25);
         fader.onValueChange = [this, &value, &fader] { value = int (fader.getValue()); publishSequence(); repaint(); };
     };
-    add (103, "VELOCITY", 1, 127, step.velocity);
-    add (152, "MIDI NOTE", 0, 127, step.note);
-    add (201, "PROBABILITY (%)", 0, 100, step.probability);
-    add (250, "MICRO TIMING (% STEP)", -50, 50, step.micro);
-    add (299, "GATE (% STEP)", 1, 100, step.gate);
+    add (98, "VELOCITY", 1, 127, step.velocity);
+    add (141, "MIDI NOTE", 0, 127, step.note);
+    add (184, "PROBABILITY (%)", 0, 100, step.probability);
+    add (227, "MICRO TIMING (% STEP)", -50, 50, step.micro);
+    add (270, "GATE (% STEP)", 1, 100, step.gate);
+    add (313, "FLAM (% STEP)", 0, 50, step.flam);
     buildingDrawer = false;
 }
 

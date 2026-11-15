@@ -12,6 +12,7 @@ struct Step
 {
     bool on = false;
     int velocity = 100, note = 60, probability = 100, micro = 0, gate = 50;
+    int flam = 0; // 0 = off, otherwise grace note this many % of a step before the hit
 };
 
 using Grid = std::array<std::array<std::array<Step, 16>, 8>, 11>;
@@ -311,7 +312,7 @@ private:
                 }
             };
             // Adjacent steps can exchange order at extreme microtiming. Sort each track's candidates.
-            struct Hit { double ppq; const Step* step; };
+            struct Hit { double ppq; const Step* step; bool grace; };
             std::array<Hit, 128> hits;
             size_t count = 0;
             for (auto i = firstGrid; i <= lastGrid && count < hits.size(); ++i)
@@ -322,9 +323,19 @@ private:
                 const double swing = (i % 2 != 0 ? (seq.swing - 50) * 0.005 : 0.0);
                 double at = nominal + swing + step.micro * 0.0025;
                 if (nominal >= audibleFrom && at < audibleFrom) at = audibleFrom;
-                if (nominal < patternStart || (phase == launch && nominal < launch) || at < audibleFrom || at < startPpq - increment * 0.5
-                    || at >= endPpq - increment * 0.5) continue;
-                hits[count++] = { at, &step };
+                if (nominal < patternStart || (phase == launch && nominal < launch)) continue;
+                const auto inWindow = [&] (double when)
+                {
+                    return when >= audibleFrom && when >= startPpq - increment * 0.5 && when < endPpq - increment * 0.5;
+                };
+                // Flam: a softer grace note shortly before the main hit.
+                if (step.flam > 0 && count < hits.size())
+                {
+                    const double graceAt = at - step.flam * 0.0025;
+                    if (inWindow (graceAt)) hits[count++] = { graceAt, &step, true };
+                }
+                if (!inWindow (at) || count >= hits.size()) continue;
+                hits[count++] = { at, &step, false };
             }
             std::sort (hits.begin(), hits.begin() + ptrdiff_t (count), [] (const Hit& a, const Hit& b) { return a.ppq < b.ppq; });
             for (size_t i = 0; i < count; ++i)
@@ -333,6 +344,13 @@ private:
                 const auto at = jmax (first, sampleFor (hit.ppq, clock.ppq, increment, end));
                 due (at);
                 stopNote (t, at, emit);
+                if (hit.grace)
+                {
+                    const int graceVelocity = jlimit (1, 127, roundToInt (hit.step->velocity * 0.6));
+                    emit (true, t, hit.step->note, graceVelocity, at, mirror, true);
+                    note = { hit.step->note, hit.ppq + hit.step->flam * 0.0025, mirror };
+                    continue;
+                }
                 emit (true, t, hit.step->note, hit.step->velocity, at, mirror, true);
                 note = { hit.step->note, hit.ppq + hit.step->gate * 0.0025, mirror };
             }

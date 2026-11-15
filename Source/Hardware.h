@@ -179,6 +179,7 @@ public:
 
     ~Hardware() override
     {
+        noteThread.stopThread (1000);
         stopTimer();
         stopAudition();
         stopUsb();
@@ -193,19 +194,25 @@ public:
         stopUsb();
         if (input != nullptr) input->stop();
         input.reset();
-        output.reset();
+        { const std::lock_guard<std::mutex> lock (outputLock); output.reset(); }
         { const std::lock_guard<std::mutex> lock (inboxLock); inbox.clear(); }
         reset();
         device = jlimit (0, 15, deviceNumber);
         inputId = in; outputId = out;
         if (in.isNotEmpty()) input = MidiInput::openDevice (in, this);
-        if (out.isNotEmpty()) output = MidiOutput::openDevice (out);
-        if (output != nullptr) output->startBackgroundThread();
+        if (out.isNotEmpty())
+        {
+            auto opened = MidiOutput::openDevice (out);
+            const std::lock_guard<std::mutex> lock (outputLock);
+            output = std::move (opened);
+        }
+        startNoteThread();
         if (input != nullptr) input->start();
         status = ready() ? "Ports open. Identify SEQTRAK to enable editing."
                          : "Select and open both SEQTRAK USB MIDI ports.";
         ++revision;
-        if (input != nullptr || output != nullptr) startTimer (1);
+        // Housekeeping only (SysEx pacing, port checks); notes go out on noteThread.
+        if (input != nullptr || output != nullptr) startTimer (5);
         else stopTimer();
     }
 
@@ -327,9 +334,8 @@ public:
 
     void panic()
     {
-        if (output != nullptr) output->clearAllPendingMessages();
-        const auto discarded = usbNotesFifo.read (usbNotesFifo.getNumReady());
-        (void) discarded;
+        flushNotes.store (true);
+        noteThread.notify();
         outbox.clear();
         if (allIndex >= 0) summary = "Read all tracks canceled.";
         activeRead = allIndex = -1;
@@ -367,7 +373,8 @@ private:
         if (output == nullptr) return;
         if (bytes.size() == 2 && (bytes[0] & 240) == 192)
             sentPrograms[size_t (bytes[0] & 15)] = { bytes[1], now() };
-        output->sendMessageNow (MidiMessage (bytes.data(), int (bytes.size()), 0.0));
+        const std::lock_guard<std::mutex> lock (outputLock);
+        if (output != nullptr) output->sendMessageNow (MidiMessage (bytes.data(), int (bytes.size()), 0.0));
     }
 
     void reset()
@@ -619,48 +626,86 @@ private:
     void stopUsb()
     {
         usbReady.store (false);
+        flushNotes.store (true);
+        noteThread.notify();
         if (output == nullptr) return;
-        output->stopBackgroundThread();
-        output->clearAllPendingMessages();
         for (int part = 0; part < 11; ++part) transmit ({ uint8 (176 + part), 120, 0 });
     }
 
-    void drainNotes (double time)
+    // Notes are timestamped on the audio thread and sent here, on a dedicated
+    // high-priority thread, at their exact due time. The UI/message thread is not
+    // involved, so a busy or backgrounded editor (or App Nap) can't delay them.
+    struct NoteThread final : Thread
     {
-        const auto read = usbNotesFifo.read (usbNotesFifo.getNumReady());
-        if (output == nullptr || !verified) return;
-        if (usbOverflow.exchange (false))
+        explicit NoteThread (Hardware& h) : Thread ("SEQTRAK notes"), owner (h) {}
+        void run() override { owner.runNotes(); }
+        Hardware& owner;
+    } noteThread { *this };
+
+    void startNoteThread()
+    {
+        if (noteThread.isThreadRunning()) return;
+        if (!noteThread.startRealtimeThread (Thread::RealtimeOptions{}.withPriority (9).withPeriodMs (1.0)))
+            noteThread.startThread (Thread::Priority::highest);
+    }
+
+    void sendAllSoundOff()
+    {
+        const std::lock_guard<std::mutex> lock (outputLock);
+        if (output == nullptr) return;
+        for (int part = 0; part < 11; ++part)
+            output->sendMessageNow (MidiMessage (uint8 (176 + part), uint8 (120), uint8 (0)));
+    }
+
+    void runNotes()
+    {
+        std::vector<ScheduledMessage> pending;
+        pending.reserve (usbNotes.size());
+        while (!noteThread.threadShouldExit())
         {
-            output->clearAllPendingMessages();
-            for (int part = 0; part < 11; ++part) transmit ({ uint8 (176 + part), 120, 0 });
-            return;
-        }
-        MidiBuffer buffer;
-        const auto add = [&] (int start, int count)
-        {
-            for (int i = start; i < start + count; ++i)
+            const auto read = usbNotesFifo.read (usbNotesFifo.getNumReady());
+            bool silence = false;
+            const auto take = [&] (int start, int count)
             {
-                const auto& note = usbNotes[size_t (i)];
-                if (note.size == 0)
+                for (int i = start; i < start + count; ++i)
                 {
-                    buffer.clear();
-                    output->clearAllPendingMessages();
-                    for (int part = 0; part < 11; ++part) transmit ({ uint8 (176 + part), 120, 0 });
-                    continue;
+                    const auto& note = usbNotes[size_t (i)];
+                    if (note.size == 0) { pending.clear(); silence = true; }   // stop / transport jump marker
+                    else pending.push_back (note);
                 }
-                buffer.addEvent (note.bytes.data(), note.size, jmax (0, roundToInt ((note.time - time) * 1000.0)));
+            };
+            take (read.startIndex1, read.blockSize1);
+            take (read.startIndex2, read.blockSize2);
+            if (usbOverflow.exchange (false)) { pending.clear(); silence = true; }
+            if (flushNotes.exchange (false)) { pending.clear(); silence = usbReady.load(); }
+            if (!usbReady.load()) pending.clear();
+            if (silence) sendAllSoundOff();
+
+            std::stable_sort (pending.begin(), pending.end(),
+                              [] (const ScheduledMessage& x, const ScheduledMessage& y) { return x.time < y.time; });
+            const auto time = now();
+            size_t sent = 0;
+            {
+                const std::lock_guard<std::mutex> lock (outputLock);
+                while (sent < pending.size() && pending[sent].time <= time + 0.1)
+                {
+                    const auto& m = pending[sent++];
+                    if (output != nullptr) output->sendMessageNow (MidiMessage (m.bytes.data(), m.size, 0.0));
+                }
             }
-        };
-        add (read.startIndex1, read.blockSize1);
-        add (read.startIndex2, read.blockSize2);
-        if (!buffer.isEmpty()) output->sendBlockOfMessages (buffer, time + 0.25, 1000000.0);
+            pending.erase (pending.begin(), pending.begin() + ptrdiff_t (sent));
+
+            // Sleep until the next note is due (at most 1 ms, so new notes are picked up quickly).
+            const auto untilNext = pending.empty() ? 1.0 : pending.front().time - now();
+            if (untilNext > 0.3) noteThread.wait (1);
+            else if (untilNext > 0.0) Thread::yield();
+        }
     }
 
     void timerCallback() override
     {
         const auto time = now();
         if (onSequenceTick) onSequenceTick();
-        drainNotes (time);
         if (time >= nextPortCheck)
         {
             nextPortCheck = time + 1000;
@@ -704,7 +749,8 @@ private:
 
     std::atomic<int> usbDevice { 0 };
     std::atomic<unsigned> usbEpoch { 0 };
-    std::atomic<bool> usbReady { false }, usbOverflow { false };
+    std::atomic<bool> usbReady { false }, usbOverflow { false }, flushNotes { false };
+    std::mutex outputLock;
     std::array<ScheduledMessage, 8192> usbNotes {};
     AbstractFifo usbNotesFifo { int (usbNotes.size()) };
     std::array<std::pair<int, double>, 16> sentPrograms {};

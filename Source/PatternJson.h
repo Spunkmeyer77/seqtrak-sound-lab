@@ -21,8 +21,12 @@ inline var encodePattern (const Pattern& p)
         {
             const auto& step = p.sequence.step (t, i);
             if (step.on || step.note != 60 || step.velocity != 100 || step.probability != 100
-                || step.micro != 0 || step.gate != 50)
-                steps.add (Array<var> { i, step.on, step.note, step.velocity, step.probability, step.micro, step.gate });
+                || step.micro != 0 || step.gate != 50 || step.flam != 0)
+            {
+                Array<var> entry { i, step.on, step.note, step.velocity, step.probability, step.micro, step.gate };
+                if (step.flam != 0) entry.add (step.flam);
+                steps.add (entry);
+            }
         }
         for (const auto& [a, value] : s.voice) voice.add (Array<var> { a[0], a[1], a[2], value });
         for (const auto& [offset, value] : s.fx) fx.add (Array<var> { offset, value });
@@ -77,13 +81,16 @@ inline bool decodePattern (const var& v, Pattern& p, const var& schema, const Ha
         sound.effect = int (row["effect"]);
         for (const auto& step : *steps)
         {
-            if (!step.isArray() || step.getArray()->size() != 7 || !integer (step[0], 0, 127)
+            const auto size = step.isArray() ? step.getArray()->size() : 0;
+            if ((size != 7 && size != 8) || !integer (step[0], 0, 127)
                 || !step[1].isBool() || !integer (step[2], 0, 127) || !integer (step[3], 1, 127)
-                || !integer (step[4], 0, 100) || !integer (step[5], -50, 50) || !integer (step[6], 1, 100))
+                || !integer (step[4], 0, 100) || !integer (step[5], -50, 50) || !integer (step[6], 1, 100)
+                || (size == 8 && !integer (step[7], 0, 50)))
                 return false;
             const int i = int (step[0]);
             p.sequence.grid[index][size_t (i / 16)][size_t (i % 16)] =
-                { bool (step[1]), int (step[3]), int (step[2]), int (step[4]), int (step[5]), int (step[6]) };
+                { bool (step[1]), int (step[3]), int (step[2]), int (step[4]), int (step[5]), int (step[6]),
+                  size == 8 ? int (step[7]) : 0 };
         }
         for (const auto& entry : *voice)
         {
