@@ -943,9 +943,23 @@ public:
     }
     Step& absStep (int a) { return grid[size_t (track)][size_t (a / 16)][size_t (a % 16)]; }
 
+    void selectTrack (int t)
+    {
+        if (comparing) toggleCompare();
+        track = jlimit (0, 10, t);
+        if (lengthButton != nullptr) lengthButton->setButtonText ("LENGTH " + String (lengths[size_t (track)]));
+        processor.hardware.selectTrack (track);
+        fxFollowHardware = true;
+        voicePart = 0;
+        comparing = false;
+        refresh();
+        if (drawer >= 0) showDrawer (drawer);
+        else if (drawerPanel != nullptr) closeDrawer();
+    }
+
     void setRoll (bool on)
     {
-        if (on && !isSynth (track) && trackButtons[8] != nullptr) trackButtons[8]->onClick();   // SYNTH 1
+        if (on && !isSynth (track)) selectTrack (7);   // SYNTH 1
         if (on == rollMode) { updateRollControls(); return; }
         rollMode = on;
         if (on)
@@ -1123,7 +1137,7 @@ public:
 
     void renderSnapshots (const String& path)
     {
-        if (trackButtons[8] != nullptr) trackButtons[8]->onClick();   // SYNTH 1
+        selectTrack (7);   // SYNTH 1
         struct Demo { int s, note, gate, chord, velocity; };
         for (const auto& d : { Demo { 0, 48, 400, 2, 110 }, Demo { 4, 55, 200, 0, 90 }, Demo { 6, 53, 200, 0, 80 },
                                Demo { 8, 51, 400, 1, 120 }, Demo { 12, 50, 200, 0, 95 }, Demo { 14, 55, 200, 8, 85 } })
@@ -1131,6 +1145,8 @@ public:
             auto& st = grid[7][0][size_t (d.s)];
             st.on = true; st.note = d.note; st.gate = d.gate; st.chord = d.chord; st.velocity = d.velocity;
         }
+        page = 0;
+        publishSequence();
         const auto save = [this] (const String& file)
         {
             const auto image = createComponentSnapshot (getLocalBounds(), true, 2.0f);
@@ -1461,16 +1477,7 @@ void Panel::makeMain()
                     refresh();
                     return;
                 }
-                if (comparing) toggleCompare();
-                track = i - 1;
-                if (lengthButton != nullptr) lengthButton->setButtonText ("LENGTH " + String (lengths[size_t (track)]));
-                processor.hardware.selectTrack (track);
-                fxFollowHardware = true;
-                voicePart = 0;
-                comparing = false;
-                refresh();
-                if (drawer >= 0) showDrawer (drawer);
-                else if (drawerPanel != nullptr) closeDrawer();
+                selectTrack (i - 1);
             }, false);
         trackButtons[size_t (i)]->getProperties().set ("italic", true);
     }
@@ -1553,7 +1560,7 @@ void Panel::makeMain()
     for (int i = 0; i < 3; ++i)
     {
         rollTabs[size_t (i)] = &button (*this, { i == 0 ? 44 : i == 1 ? 118 : 192, 43, i < 2 ? 70 : 48, 22 }, tracks[7 + i],
-                                        [this, i] { if (trackButtons[size_t (8 + i)] != nullptr) trackButtons[size_t (8 + i)]->onClick(); }, false);
+                                        [this, i] { selectTrack (7 + i); }, false);
         rollTabs[size_t (i)]->getProperties().set ("italic", true);
         rollTabs[size_t (i)]->setTooltip ("Edit " + tracks[7 + i] + " in the roll.");
     }
@@ -1718,11 +1725,7 @@ void Panel::paint (Graphics& g)
     text (ink, "SWING " + String (swing) + "%  /  FOLLOW " + (processor.bank.follow.load() ? "ON" : "OFF"), { 393, 249, 132, 25 }, 11);
     if (!(recArmed && recMode == 0))
         text (ink, String (bpm) + " BPM  /  " + (playing ? "PLAYING" : "STOPPED"), { 530, 249, 104, 25 }, 11);
-    if (recArmed && recMode == 0 && recCursor / 16 == page)   // step-record cursor on the pads
-    {
-        g.setColour (cream);
-        g.drawRoundedRectangle (float (40 + (recCursor % 16) * 50) - 2.0f, 287.0f, 50.0f, 116.0f, 3.0f, 2.0f);
-    }
+
 
     for (int i = 0; i < 12; ++i)
     {
@@ -1823,6 +1826,7 @@ void Panel::paint (Graphics& g)
             g.fillEllipse (float (1174 + pad * 24), 186.0f, 8.0f, 8.0f);
         }
 
+    if (rollMode) return;   // the piano roll replaces the pads
     for (int row = 0; row < 2; ++row)
         for (int i = 0; i < 16; ++i)
         {
@@ -1843,6 +1847,11 @@ void Panel::paint (Graphics& g)
                 text (ink, row == 0 ? String (i + 1).paddedLeft ('0', 2) : String (step.velocity),
                   { x + 7, y + 39, 36, 17 }, 11);
         }
+    if (recArmed && recMode == 0 && recCursor / 16 == page)   // step-record cursor on the pads
+    {
+        g.setColour (cream);
+        g.drawRoundedRectangle (float (40 + (recCursor % 16) * 50) - 2.0f, 287.0f, 50.0f, 116.0f, 3.0f, 2.0f);
+    }
 }
 
 

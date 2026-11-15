@@ -120,3 +120,6 @@ jobs:
           cp docs/*.pdf dist/
           gh release create "$T" dist/* --target "$GITHUB_SHA" --title "SEQTRAK Editor $T" --notes-file docs/release-notes.md || \
           gh release upload "$T" dist/* --clobber
+          for a in $(gh release view "$T" --json assets -q '.assets[].name'); do
+            [ -f "dist/$a" ] || gh release delete-asset "$T" "$a" -y
+          done
