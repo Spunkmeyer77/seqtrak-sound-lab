@@ -2427,7 +2427,8 @@ void Panel::printDrawer()
            "The chosen SEQTRAK pattern is overwritten on the selected tracks.", darkOrange);
     auto& go = button (panel, { 16, 272, 150, 30 }, "PRINT TO SEQTRAK", [this] { printToSeqtrak(); });
     go.setTooltip ("Stop SEQTRAK and your DAW first, then print.");
-    printStatus = &label (panel, { 176, 272, 333, 30 }, "Stop SEQTRAK and your DAW first.", cream);
+    printStatus = &label (panel, { 176, 272, 333, 30 },
+                          "First time? Test on a SEQTRAK pattern you don't mind losing. Stop SEQTRAK and your DAW first.", cream);
     label (panel, { 16, 310, 493, 40 },
            "Tip: after printing, set SEQUENCER MODE to HARDWARE (or turn the editor's sequencer off) "
            "so the editor doesn't play the same notes on top of SEQTRAK.", darkOrange);
