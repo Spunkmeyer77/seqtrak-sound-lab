@@ -1252,7 +1252,7 @@ void Panel::refresh()
     const auto& names = knobLabels[size_t (section)];
     for (int i = 0; i < 4; ++i)
     {
-        const auto name = i < names.size() ? names[i].toUpperCase() : String (CharPointer_UTF8 ("—"));
+        const auto name = i < names.size() ? names[i].toUpperCase() : String ("-");
         quickNames[size_t (i)]->setText (name, dontSendNotification);
         quick[size_t (i)]->setName (name);
         quick[size_t (i)]->setTooltip (name);
@@ -2381,7 +2381,7 @@ void Panel::chainDrawer()
     button (panel, { 409, 48, 100, 26 }, "PATTERNS", [this] { showDrawer (4, false); });
     chainStatus = &label (panel, { 16, 80, 493, 20 }, {}, darkOrange);
 
-    StringArray slots { CharPointer_UTF8 ("— end —") }, bars;
+    StringArray slots { "(end)" }, bars;
     StringArray names;
     {
         const std::lock_guard<std::mutex> guard (bank.lock);
