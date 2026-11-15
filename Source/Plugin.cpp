@@ -340,8 +340,13 @@ public:
         controlGeneration = audioGeneration;
         controlExpected = clock.ppq + count * increment;
         controlWasPlaying = clock.playing;
-        const int ui = bank.requested.exchange (-1);
+        int ui = bank.requested.exchange (-1);
         const int usb = bank.hardwareProgram.exchange (-1);
+        const int chained = runChain (clock, count * increment);
+        const bool chainSwitch = ui < 0 && usb < 0 && chained >= 0;
+        if (ui >= 0 && chained >= 0) chainRequested = false;   // a manual switch wins; retry the chain step
+        if (chainSwitch) ui = chained;
+        bank.chainBarQuantize.store (chainSwitch);
         sequencer.render (bank, audioSequences, clock, count, sampleRate, midi,
             ui >= 0 ? ui : usb, ui >= 0,
             [this, blockTime] (bool on, int track, int note, int velocity, int sample, bool mirror, bool usbOut)
@@ -376,6 +381,7 @@ public:
             }
         }
         else sentTempo = -1;
+        bank.chainBarQuantize.store (false);
         sendPanelControls (blockTime);
         const int record = bank.recordQuantize.load();
         if (record >= 0 && record != sentRecordQuantize)
@@ -442,7 +448,16 @@ public:
             {"follow", bank.follow.load()}, {"tempo", bank.tempo.load()},
             {"hardwareMode", bank.hardwareMode.load()}, {"sendTempo", bank.sendTempo.load()},
             {"hardwareFollow", bank.hardwareFollow.load()}, {"recordQuantize", bank.recordQuantize.load()},
-            {"trackModes", trackModesData()} });
+            {"trackModes", trackModesData()}, {"chain", chainData()},
+            {"chainOn", bank.chainOn.load()}, {"chainLoop", bank.chainLoop.load()} });
+    }
+
+    var chainData() const
+    {
+        Array<var> chain;
+        for (int i = 0; i < seqtrak::Bank::chainSize; ++i)
+            chain.add (Array<var> { bank.chainSlots[size_t (i)].load(), bank.chainBars[size_t (i)].load() });
+        return chain;
     }
 
     var trackModesData() const
@@ -483,6 +498,17 @@ public:
             bank.mirror.store (bool (data["mirror"]));
             bank.sendProgram.store (bool (data["sendProgram"]));
             bank.follow.store (bool (data["follow"]));
+            const auto* chain = data["chain"].getArray();
+            for (int i = 0; i < seqtrak::Bank::chainSize; ++i)
+            {
+                const bool valid = chain != nullptr && i < chain->size() && (*chain)[i].isArray()
+                                   && (*chain)[i].getArray()->size() == 2
+                                   && seqtrak::integer ((*chain)[i][0], -1, 15) && seqtrak::integer ((*chain)[i][1], 1, 64);
+                bank.chainSlots[size_t (i)].store (valid ? int ((*chain)[i][0]) : -1);
+                bank.chainBars[size_t (i)].store (valid ? int ((*chain)[i][1]) : 1);
+            }
+            bank.chainOn.store (bool (data["chainOn"]));
+            bank.chainLoop.store (data["chainLoop"].isVoid() || bool (data["chainLoop"]));
         }
         return true;
     }
@@ -596,6 +622,69 @@ private:
     std::array<int, 4> sentQuick {};
     int sentFxLevel = -1, sentHighPass = -1, sentRepeat = -1;
     bool panelPrimed = false;
+
+    bool chainWasRunning = false, chainRequested = false;
+    int chainIndex = 0, chainBarsLeft = 0;
+    int64 chainLastBar = 0;
+
+    // Pattern chain: returns a slot to switch to (bar-quantized), or -1.
+    int runChain (const seqtrak::Clock& clock, double blockLength)
+    {
+        int entries = 0;
+        while (entries < seqtrak::Bank::chainSize && isPositiveAndBelow (bank.chainSlots[size_t (entries)].load(), 16)) ++entries;
+        if (!bank.chainOn.load() || !clock.playing || entries == 0 || clock.barLength <= 0)
+        {
+            chainWasRunning = false;
+            bank.chainPosition.store (-1);
+            return -1;
+        }
+        const auto slotAt = [&] (int i) { return bank.chainSlots[size_t (i)].load(); };
+        const auto barsAt = [&] (int i) { return jlimit (1, 64, bank.chainBars[size_t (i)].load()); };
+        const auto position = [&] (double ppq) { return (ppq - clock.barOrigin) / clock.barLength; };
+        if (!chainWasRunning)
+        {
+            chainWasRunning = true;
+            chainIndex = 0;
+            chainRequested = false;
+            const auto start = position (clock.ppq);
+            const auto fraction = start - std::floor (start);
+            const bool onBar = fraction < 1.0e-6 || fraction > 1.0 - 1.0e-6;
+            chainLastBar = int64 (std::floor (start + 1.0e-9));
+            chainBarsLeft = barsAt (0) + (onBar ? 0 : 1);
+            bank.chainPosition.store (0);
+            return slotAt (0);
+        }
+        const auto end = position (clock.ppq + blockLength);
+        const auto bar = int64 (std::floor (end + 1.0e-9));
+        while (chainLastBar < bar)
+        {
+            ++chainLastBar;
+            if (--chainBarsLeft > 0) continue;
+            int next = chainIndex + 1;
+            if (next >= entries)
+            {
+                if (!bank.chainLoop.load()) { chainBarsLeft = std::numeric_limits<int>::max() / 2; continue; }
+                next = 0;
+            }
+            chainIndex = next;
+            chainBarsLeft = barsAt (next);
+            chainRequested = false;
+            bank.chainPosition.store (chainIndex);
+        }
+        // Ask for the next step halfway through the last bar, so it lands exactly on the next bar.
+        if (!chainRequested && chainBarsLeft == 1 && end - std::floor (end) >= 0.5)
+        {
+            chainRequested = true;
+            int next = chainIndex + 1;
+            if (next >= entries)
+            {
+                if (!bank.chainLoop.load()) return -1;
+                next = 0;
+            }
+            return slotAt (next);
+        }
+        return -1;
+    }
 
     // Sends panel knobs/faders to SEQTRAK as Control Change when their value changes.
     void sendPanelControls (double time)
@@ -826,6 +915,11 @@ private:
     void applyVoice (int t, const std::vector<int>& snapshot);
     void checkpoint (int t);
     void snapshotsDrawer();
+    void chainDrawer();
+    void updateChainStatus();
+    Label* chainStatus = nullptr;
+    std::array<Label*, 16> chainNumbers {};
+    int shownChainPosition = -2;
     Array<var> snapshots() const;
     void saveSnapshots (const Array<var>& items);
     String snapshotStatus;
@@ -1253,6 +1347,9 @@ void Panel::clearDrawer()
     categoryBox = nullptr;
     presetStatus = nullptr;
     presetLoad = nullptr;
+    chainStatus = nullptr;
+    chainNumbers.fill (nullptr);
+    shownChainPosition = -2;
     while (!temporary.empty()) temporary.pop_back();
     drawerPanel = nullptr;
 }
@@ -1268,7 +1365,8 @@ void Panel::showDrawer (int index, bool animate)
     auto& bg = make<Label> (panel, panel.getLocalBounds());
     bg.setColour (Label::backgroundColourId, orange);
     bg.setInterceptsMouseClicks (false, false);
-    label (panel, { 15, 10, 205, 30 }, (index == 6 ? String ("SNAPSHOTS") : drawers[index]) + "  /  " + tracks[track]).setFont (face (19, Font::bold));
+    label (panel, { 15, 10, 205, 30 }, index == 7 ? String ("PATTERN CHAIN")
+                                       : (index == 6 ? String ("SNAPSHOTS") : drawers[index]) + "  /  " + tracks[track]).setFont (face (19, Font::bold));
     label (panel, { 313, 13, 128, 24 }, processor.hardware.verified ? "USB MIDI" : "DEMO", darkOrange);
     button (panel, { 462, 12, 49, 24 }, "CLOSE", [this] { closeDrawer(); });
 
@@ -1281,6 +1379,7 @@ void Panel::showDrawer (int index, bool animate)
         case 4: patternDrawer(); break;
         case 5: connectionDrawer(); break;
         case 6: snapshotsDrawer(); break;
+        case 7: chainDrawer(); break;
         default: break;
     }
     buildingDrawer = false;
@@ -1812,6 +1911,9 @@ void Panel::patternDrawer()
         for (const auto& slot : bank.slots) names.add (slot.name);
     }
     label (panel, { 16, 45, 493, 23 }, "ACTIVE SLOT " + String (pattern + 1) + "  /  " + names[pattern], darkOrange);
+    auto& chainButton = button (panel, { 240, 12, 66, 24 }, "CHAIN", [this] { showDrawer (7, false); });
+    chainButton.setToggleState (bank.chainOn.load(), dontSendNotification);
+    chainButton.setTooltip ("Pattern chain: play slots in order, each for a number of bars");
     for (int i = 0; i < 16; ++i)
     {
         auto& b = button (panel, { 16 + (i % 8) * 62, 72 + (i / 8) * 40, 56, 34 },
@@ -2063,6 +2165,75 @@ void Panel::chooseSnapshotFile (bool exporting)
         });
 }
 
+void Panel::chainDrawer()
+{
+    auto& panel = *drawerPanel;
+    auto& bank = processor.bank;
+    navigation[4]->setToggleState (true, dontSendNotification);
+    auto& on = button (panel, { 16, 48, 104, 26 }, "CHAIN ON", [this] {});
+    on.setClickingTogglesState (true);
+    on.setToggleState (bank.chainOn.load(), dontSendNotification);
+    on.onClick = [this, &on] { processor.bank.chainOn.store (on.getToggleState()); };
+    auto& loop = button (panel, { 128, 48, 80, 26 }, "LOOP", [this] {});
+    loop.setClickingTogglesState (true);
+    loop.setToggleState (bank.chainLoop.load(), dontSendNotification);
+    loop.onClick = [this, &loop] { processor.bank.chainLoop.store (loop.getToggleState()); };
+    button (panel, { 216, 48, 80, 26 }, "CLEAR", [this]
+    {
+        for (auto& c : processor.bank.chainSlots) c.store (-1);
+        for (auto& c : processor.bank.chainBars) c.store (1);
+        showDrawer (7, false);
+    });
+    button (panel, { 409, 48, 100, 26 }, "PATTERNS", [this] { showDrawer (4, false); });
+    chainStatus = &label (panel, { 16, 80, 493, 20 }, {}, darkOrange);
+
+    StringArray slots { CharPointer_UTF8 ("— end —") }, bars;
+    StringArray names;
+    {
+        const std::lock_guard<std::mutex> guard (bank.lock);
+        for (int i = 0; i < 16; ++i) names.add (String (i + 1).paddedLeft ('0', 2) + "  " + bank.slots[size_t (i)].name);
+    }
+    slots.addArray (names);
+    for (int b = 1; b <= 64; ++b) bars.add (String (b) + (b == 1 ? " bar" : " bars"));
+    for (int i = 0; i < seqtrak::Bank::chainSize; ++i)
+    {
+        const int x = 16 + (i / 8) * 250, y = 106 + (i % 8) * 33;
+        chainNumbers[size_t (i)] = &label (panel, { x, y, 26, 26 }, String (i + 1), darkOrange);
+        auto& slot = combo (panel, { x + 28, y, 130, 26 }, slots, bank.chainSlots[size_t (i)].load() + 1);
+        slot.onChange = [this, i, &slot]
+        {
+            processor.bank.chainSlots[size_t (i)].store (slot.getSelectedItemIndex() - 1);
+            shownChainPosition = -2;
+        };
+        auto& length = combo (panel, { x + 162, y, 78, 26 }, bars, jlimit (1, 64, bank.chainBars[size_t (i)].load()) - 1);
+        length.onChange = [this, i, &length] { processor.bank.chainBars[size_t (i)].store (length.getSelectedItemIndex() + 1); };
+    }
+    updateChainStatus();
+}
+
+void Panel::updateChainStatus()
+{
+    if (chainStatus == nullptr) return;
+    const auto& bank = processor.bank;
+    const int position = bank.chainPosition.load();
+    if (position == shownChainPosition) return;
+    shownChainPosition = position;
+    int entries = 0;
+    while (entries < seqtrak::Bank::chainSize && bank.chainSlots[size_t (entries)].load() >= 0) ++entries;
+    String text = entries == 0 ? "Pick slots below; the chain stops at the first empty step."
+                : !bank.chainOn.load() ? String (entries) + " steps. Turn CHAIN ON and start playback."
+                : position < 0 ? String (entries) + " steps. Starts with step 1 when playback starts."
+                : "PLAYING STEP " + String (position + 1) + " OF " + String (entries) + "  /  SLOT "
+                    + String (bank.chainSlots[size_t (position)].load() + 1).paddedLeft ('0', 2);
+    chainStatus->setText (text, dontSendNotification);
+    for (int i = 0; i < seqtrak::Bank::chainSize; ++i)
+        if (auto* n = chainNumbers[size_t (i)])
+        {
+            n->setColour (Label::textColourId, i == position ? cream : darkOrange);
+            n->setFont (face (15, i == position ? Font::bold : Font::plain));
+        }
+}
+
 void Panel::snapshotsDrawer()
 {
     auto& panel = *drawerPanel;
@@ -2273,6 +2444,7 @@ void Panel::timerCallback()
         refresh();
         if (drawer >= 0) showDrawer (drawer, false);
     }
+    if (drawer == 7) updateChainStatus();
     bpm = roundToInt (bank.displayTempo.load());
     playing = bank.playing.load();
     head = bank.heads[size_t (track)].load();

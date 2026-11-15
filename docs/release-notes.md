@@ -1,6 +1,6 @@
 SEQTRAK Editor v0.4.3 — Transistor Labs
 
-- Flam per step, 4/4 beat marks, tighter USB note timing, lighter editor
+- Pattern chain, flam per step, 4/4 beat marks, tighter USB note timing, lighter editor
 
 - Selected track name box now framed with a thin line
 

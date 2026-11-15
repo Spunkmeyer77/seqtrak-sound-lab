@@ -72,6 +72,12 @@ struct Bank
     std::array<std::atomic<int>, 11> heads {};
     std::atomic<unsigned> switched { 0 }, editGeneration { 0 }, restored { 0 }, sequenceRevision { 1 };
 
+    // Pattern chain: up to 16 steps of (slot 0-15, bars 1-64); slot -1 ends the chain.
+    static constexpr int chainSize = 16;
+    std::array<std::atomic<int>, chainSize> chainSlots {}, chainBars {};
+    std::atomic<bool> chainOn { false }, chainLoop { true }, chainBarQuantize { false };
+    std::atomic<int> chainPosition { -1 };
+
     Bank()
     {
         for (int i = 0; i < 16; ++i) slots[size_t (i)].name = "Pattern " + String (i + 1);
@@ -79,6 +85,8 @@ struct Bank
         for (auto& mute : displayedMutes) mute.store (false);
         for (auto& pattern : displayedPatterns) pattern.store (-1);
         for (auto& head : heads) head.store (-1);
+        for (auto& c : chainSlots) c.store (-1);
+        for (auto& c : chainBars) c.store (1);
         for (int t = 0; t < 11; ++t)
             for (int s = 0; s < 16; ++s)
                 slots[0].sequence.grid[size_t (t)][0][size_t (s)].on = (s + t) % (t == 3 || t == 4 ? 2 : 4) == 0;
@@ -250,9 +258,10 @@ private:
 public:
     static double quantized (const Bank& bank, Clock clock, double ppq, double tolerance)
     {
-        if (!clock.playing || bank.quantize.load() == 0) return ppq;
-        return nextBoundary (ppq, clock.barOrigin, bank.quantize.load() == 1 ? clock.beatLength : clock.barLength,
-                             tolerance);
+        // Chain switches always land on the next bar, whatever the switch-quantize setting.
+        const int q = bank.chainBarQuantize.load() ? 2 : bank.quantize.load();
+        if (!clock.playing || q == 0) return ppq;
+        return nextBoundary (ppq, clock.barOrigin, q == 1 ? clock.beatLength : clock.barLength, tolerance);
     }
 
     static int sampleFor (double at, double start, double increment, int limit)
