@@ -2752,7 +2752,10 @@ void Panel::timerCallback()
     auto& bank = processor.bank;
     const auto switched = bank.switched.load();
     const auto restored = bank.restored.load();
-    if (switched != seenSwitch || restored != seenRestore || pattern != bank.current.load())
+    // While a step is being edited (or pads held/painted), don't follow slot changes from playback
+    // (pattern chain, Program Change): keep the editor open on its own slot and catch up after.
+    const bool editing = editedStep >= 0 || painting || heldPad >= 0;
+    if (restored != seenRestore || (!editing && (switched != seenSwitch || pattern != bank.current.load())))
     {
         seenSwitch = switched;
         seenRestore = restored;
@@ -2774,7 +2777,7 @@ void Panel::timerCallback()
     }
     if (flashedPad >= 0 && (!bank.hardwareFollow.load() || Time::getMillisecondCounterHiRes() >= padFlashUntil))
         flashedPad = -1;
-    if (bank.hardwareFollow.load() && selected >= 0 && selected != track)
+    if (bank.hardwareFollow.load() && selected >= 0 && selected != track && !editing)
     {
         if (comparing) toggleCompare();
         track = selected;
@@ -2921,7 +2924,8 @@ void Panel::editStep (int index)
     auto& panel = *drawerPanel;
     auto& bg = make<Label> (panel, panel.getLocalBounds());
     bg.setColour (Label::backgroundColourId, orange);
-    label (panel, { 16, 14, 375, 30 }, tracks[track] + "  /  STEP " + String (page * 16 + index + 1)).setFont (face (21, Font::bold));
+    label (panel, { 16, 14, 410, 30 }, tracks[track] + "  /  " + seqtrak::slotLabel (pattern) + "  /  STEP "
+           + String (page * 16 + index + 1)).setFont (face (21, Font::bold));
     button (panel, { 438, 14, 70, 26 }, "CLOSE", [this] { closeDrawer(); });
     auto& step = stepAt (index);
     auto& toggle = button (panel, { 16, 59, 103, 28 }, "ACTIVE", [this, &step] { step.on = !step.on; publishSequence(); repaint(); });
