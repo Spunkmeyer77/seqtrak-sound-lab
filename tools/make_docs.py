@@ -73,7 +73,7 @@ def cover(c, d):
                  ("PATTERN CHAIN", "Arrange whole songs, bar-accurate, looping"),
                  ("PRINT TO SEQTRAK", "Write your patterns into the hardware"),
                  ("EVERY SOUND, EVERY PARAMETER", "2,032 presets, Deep Edit, FX, randomizer"),
-                 ("11-TRACK STEP SEQUENCER", "Probability, micro timing, flam, chords"),
+                 ("11-TRACK STEP SEQUENCER", "Velocity, probability, micro timing, flam, chords"),
                  ("LIVE HARDWARE CONTROL", "Knobs, mute/solo, tempo sync over USB")]
     top = ph - 300 - 18 - iw * 840 / 2800 - 30
     for i, (title, line) in enumerate(strengths):
@@ -152,7 +152,10 @@ story = [
        bl(["Every pattern stores the sequence of all 11 tracks plus their sounds, and all 64 are saved with your DAW project.",
            "Switch patterns from the editor, by Program Change 0–63, or automatically with the <b>Pattern Chain</b>: up to 16 "
            "steps, each a pattern and a length in bars, switching exactly on the bar and looping if you want, to arrange whole songs.",
-           "Want a pattern on SEQTRAK itself? <b>Print to SEQTRAK</b> writes any of the 64 into one of SEQTRAK's 6 slots."])),
+           "Want a pattern on SEQTRAK itself? <b>Print to SEQTRAK</b> writes any of the 64 into one of SEQTRAK's 6 slots.",
+           "<b>Velocity on every step, made easy:</b> each step has its own velocity (1–127). Set it exactly in the step editor, "
+           "draw it with the mouse in the piano roll's VEL lane, or record it by playing a velocity-sensitive MIDI keyboard. "
+           "Accents, ghost notes and dynamics become quick to program, and Print to SEQTRAK carries the velocities onto the hardware."])),
     ch("6. The Panel at a Glance",
        *fig("main", W),
        nl(["<b>Top bar:</b> LENGTH (steps of the selected track), FOLLOW (pads follow the playing page; orange = on), "
