@@ -1,4 +1,6 @@
-SEQTRAK Editor v0.4.1 — Transistor Labs
+SEQTRAK Editor v0.4.2 — Transistor Labs
+
+- Selected track name box now framed with a thin line
 
 - Fix: About opens inside the plugin window; drawers no longer jump when opened
 

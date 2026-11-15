@@ -78,6 +78,12 @@ public:
         if (down) colour = colour.darker (0.2f);
         g.setColour (colour.withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.65f));
         g.fillRoundedRectangle (b.getLocalBounds().toFloat().reduced (0.5f), 2.0f);
+        if (b.getProperties().contains ("italic") && b.getToggleState())
+        {
+            // Selected track: thin dark frame around the name box.
+            g.setColour (ink);
+            g.drawRoundedRectangle (b.getLocalBounds().toFloat().reduced (1.0f), 2.0f, 1.5f);
+        }
     }
 
     void drawRotarySlider (Graphics& g, int x, int y, int w, int h, float value,
