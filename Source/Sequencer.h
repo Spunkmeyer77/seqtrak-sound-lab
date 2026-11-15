@@ -13,7 +13,31 @@ struct Step
     bool on = false;
     int velocity = 100, note = 60, probability = 100, micro = 0, gate = 50;
     int flam = 0; // 0 = off, otherwise grace note this many % of a step before the hit
+    int chord = 0; // 0 = single note, otherwise an entry of chordTypes (synth tracks)
 };
+
+// Step chords: semitone intervals above the step's note (root not listed).
+struct ChordType { const char* name; std::array<int, 4> intervals; int count; };
+inline const std::array<ChordType, 13> chordTypes {{
+    { "Off", {}, 0 }, { "Major", { 4, 7 }, 2 }, { "Minor", { 3, 7 }, 2 }, { "7", { 4, 7, 10 }, 3 },
+    { "Maj7", { 4, 7, 11 }, 3 }, { "m7", { 3, 7, 10 }, 3 }, { "m9", { 3, 7, 10, 14 }, 4 },
+    { "Sus2", { 2, 7 }, 2 }, { "Sus4", { 5, 7 }, 2 }, { "Add9", { 4, 7, 14 }, 3 },
+    { "Dim", { 3, 6 }, 2 }, { "Aug", { 4, 8 }, 2 }, { "Power", { 7, 12 }, 2 }
+}};
+
+// All notes a step plays (root first), clamped to MIDI range.
+inline int stepNotes (const Step& step, std::array<int, 5>& out)
+{
+    int n = 0;
+    out[size_t (n++)] = step.note;
+    if (isPositiveAndBelow (step.chord, int (chordTypes.size())))
+        for (int i = 0; i < chordTypes[size_t (step.chord)].count; ++i)
+        {
+            const int v = step.note + chordTypes[size_t (step.chord)].intervals[size_t (i)];
+            if (v <= 127) out[size_t (n++)] = v;
+        }
+    return n;
+}
 
 using Grid = std::array<std::array<std::array<Step, 16>, 8>, 11>;
 using Mix = std::array<std::array<bool, 2>, 11>;
@@ -240,7 +264,7 @@ public:
     }
 
 private:
-    struct Note { int number = -1; double off = 0; bool mirrored = false; };
+    struct Note { int number = -1; double off = 0; bool mirrored = false; std::array<int, 4> extra { -1, -1, -1, -1 }; };
     std::array<Note, 11> notes;
     int slot = 0, pending = -1;
     bool wasPlaying = false, announce = false, mirrorWasOn = false;
@@ -288,6 +312,8 @@ private:
     {
         auto& note = notes[size_t (track)];
         if (note.number >= 0) emit (false, track, note.number, 0, at, note.mirrored, true);
+        for (const int extra : note.extra)
+            if (extra >= 0) emit (false, track, extra, 0, at, note.mirrored, true);
         note = {};
     }
 
@@ -360,8 +386,12 @@ private:
                     note = { hit.step->note, hit.ppq + hit.step->flam * 0.0025, mirror };
                     continue;
                 }
-                emit (true, t, hit.step->note, hit.step->velocity, at, mirror, true);
+                std::array<int, 5> chordNotes {};
+                const int voices = stepNotes (*hit.step, chordNotes);
+                for (int v = 0; v < voices; ++v)
+                    emit (true, t, chordNotes[size_t (v)], hit.step->velocity, at, mirror, true);
                 note = { hit.step->note, hit.ppq + hit.step->gate * 0.0025, mirror };
+                for (int v = 1; v < voices; ++v) note.extra[size_t (v - 1)] = chordNotes[size_t (v)];
             }
             due (end - 1);
         }

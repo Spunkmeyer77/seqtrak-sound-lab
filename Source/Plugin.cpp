@@ -1008,6 +1008,11 @@ private:
     void checkpoint (int t);
     void snapshotsDrawer();
     void chainDrawer();
+    void printDrawer();
+    void printToSeqtrak();
+    Label* printStatus = nullptr;
+    int printSource = -1, printDest = 0;
+    std::array<bool, 11> printTracks { true, true, true, true, true, true, true, true, true, true, true };
     void updateChainStatus();
     Label* chainStatus = nullptr;
     std::array<Label*, 16> chainNumbers {};
@@ -1474,6 +1479,7 @@ void Panel::clearDrawer()
     presetStatus = nullptr;
     presetLoad = nullptr;
     chainStatus = nullptr;
+    printStatus = nullptr;
     chainNumbers.fill (nullptr);
     shownChainPosition = -2;
     while (!temporary.empty()) temporary.pop_back();
@@ -1491,7 +1497,7 @@ void Panel::showDrawer (int index, bool animate)
     auto& bg = make<Label> (panel, panel.getLocalBounds());
     bg.setColour (Label::backgroundColourId, orange);
     bg.setInterceptsMouseClicks (false, false);
-    label (panel, { 15, 10, 205, 30 }, index == 7 ? String ("PATTERN CHAIN")
+    label (panel, { 15, 10, 205, 30 }, index == 8 ? String ("PRINT TO SEQTRAK") : index == 7 ? String ("PATTERN CHAIN")
                                        : (index == 6 ? String ("SNAPSHOTS") : drawers[index]) + "  /  " + tracks[track]).setFont (face (19, Font::bold));
     label (panel, { 313, 13, 128, 24 }, processor.hardware.verified ? "USB MIDI" : "DEMO", darkOrange);
     button (panel, { 462, 12, 49, 24 }, "CLOSE", [this] { closeDrawer(); });
@@ -1506,6 +1512,7 @@ void Panel::showDrawer (int index, bool animate)
         case 5: connectionDrawer(); break;
         case 6: snapshotsDrawer(); break;
         case 7: chainDrawer(); break;
+        case 8: printDrawer(); break;
         default: break;
     }
     buildingDrawer = false;
@@ -2197,7 +2204,9 @@ void Panel::patternDrawer()
         : String ("Only used in HARDWARE mode: set Sequencer Mode or this track's override to HARDWARE.");
     hwPattern.setTooltip (hardwareTrackMode ? "SEQTRAK internal pattern (1-6) this slot plays on this track" : hwTip);
     hwMute.setTooltip (hardwareTrackMode ? "Mute this track on SEQTRAK when this slot is launched" : hwTip);
-    label (panel, { 16, 354, 493, 22 }, patternStatus, darkOrange);
+    label (panel, { 16, 354, 380, 22 }, patternStatus, darkOrange);
+    auto& print = button (panel, { 400, 352, 109, 24 }, "PRINT", [this] { printSource = pattern; showDrawer (8, false); });
+    print.setTooltip ("Write a slot's steps into one of SEQTRAK's own patterns, so it plays without the computer.");
 }
 
 void Panel::choosePatternFile (bool whole, bool exporting)
@@ -2382,6 +2391,97 @@ void Panel::chainDrawer()
         length.onChange = [this, i, &length] { processor.bank.chainBars[size_t (i)].store (length.getSelectedItemIndex() + 1); };
     }
     updateChainStatus();
+}
+
+void Panel::printDrawer()
+{
+    auto& panel = *drawerPanel;
+    auto& bank = processor.bank;
+    navigation[4]->setToggleState (true, dontSendNotification);
+    if (printSource < 0) printSource = pattern;
+    StringArray names;
+    {
+        const std::lock_guard<std::mutex> guard (bank.lock);
+        for (int i = 0; i < 16; ++i) names.add (String (i + 1).paddedLeft ('0', 2) + "  " + bank.slots[size_t (i)].name);
+    }
+    label (panel, { 16, 44, 493, 20 }, "Writes a slot into one of SEQTRAK's own patterns, so it plays without the computer.", darkOrange);
+    label (panel, { 16, 72, 110, 26 }, "FROM SLOT", darkOrange);
+    auto& source = combo (panel, { 128, 72, 220, 26 }, names, printSource);
+    source.onChange = [this, &source] { printSource = jmax (0, source.getSelectedItemIndex()); };
+    label (panel, { 16, 104, 150, 26 }, "TO SEQTRAK PATTERN", darkOrange);
+    auto& dest = combo (panel, { 168, 104, 80, 26 }, { "1", "2", "3", "4", "5", "6" }, printDest);
+    dest.onChange = [this, &dest] { printDest = jmax (0, dest.getSelectedItemIndex()); };
+    button (panel, { 409, 72, 100, 26 }, "PATTERNS", [this] { showDrawer (4, false); });
+    label (panel, { 16, 138, 120, 20 }, "TRACKS", darkOrange);
+    for (int t = 0; t < 11; ++t)
+    {
+        auto& b = button (panel, { 16 + (t % 6) * 82, 160 + (t / 6) * 30, 78, 26 }, tracks[t], [] {});
+        b.setClickingTogglesState (true);
+        b.setToggleState (printTracks[size_t (t)], dontSendNotification);
+        b.setTooltip ("Include " + tracks[t] + " in the print.");
+        b.onClick = [this, t, &b] { printTracks[size_t (t)] = b.getToggleState(); };
+    }
+    button (panel, { 427, 190, 82, 26 }, "ALL", [this] { printTracks.fill (true); showDrawer (8, false); });
+    label (panel, { 16, 226, 493, 36 },
+           "Prints notes, velocity, length, micro timing and synth chords. Probability and flam stay in the editor. "
+           "The chosen SEQTRAK pattern is overwritten on the selected tracks.", darkOrange);
+    auto& go = button (panel, { 16, 272, 150, 30 }, "PRINT TO SEQTRAK", [this] { printToSeqtrak(); });
+    go.setTooltip ("Stop SEQTRAK and your DAW first, then print.");
+    printStatus = &label (panel, { 176, 272, 333, 30 }, "Stop SEQTRAK and your DAW first.", cream);
+    label (panel, { 16, 310, 493, 40 },
+           "Tip: after printing, set SEQUENCER MODE to HARDWARE (or turn the editor's sequencer off) "
+           "so the editor doesn't play the same notes on top of SEQTRAK.", darkOrange);
+}
+
+void Panel::printToSeqtrak()
+{
+    auto& hw = processor.hardware;
+    if (!hw.verified)
+    {
+        printStatus->setText ("Not connected. Open CONNECTION, choose the SEQTRAK ports and press IDENTIFY.", dontSendNotification);
+        return;
+    }
+    if (processor.bank.playing.load())
+    {
+        printStatus->setText ("Stop playback first (DAW and SEQTRAK), then print.", dontSendNotification);
+        return;
+    }
+    seqtrak::Sequence seq;
+    {
+        const std::lock_guard<std::mutex> guard (processor.bank.lock);
+        seq = processor.bank.slots[size_t (jlimit (0, 15, printSource))].sequence;
+    }
+    const int dest = jlimit (0, 5, printDest);
+    int notesWritten = 0;
+    hw.queueSysex (0x30, 0x40, 0x79, { 1 });                       // Pattern Select Mode 1: all six slots reachable
+    for (int t = 0; t < 11; ++t)
+    {
+        if (!printTracks[size_t (t)]) continue;
+        const int length = jlimit (1, 128, seq.lengths[size_t (t)]);
+        hw.queueSysex (0x30, 0x50 + t, 0x0f, { dest });             // select the destination pattern (writes go there)
+        hw.queueSysex (0x01, 0x10 + t, 0x37, { dest });             // clear it
+        hw.queueSysex (0x30, 0x50 + t, 0x10 + dest, { jlimit (1, 8, (length + 15) / 16) });   // bar length
+        hw.queueSysex (0x30, 0x50 + t, 0x16 + dest * 2, { length >> 7, length & 127 });        // step count
+        for (int s = 0; s < length; ++s)
+        {
+            const auto& step = seq.step (t, s);
+            if (!step.on) continue;
+            // 120 ticks per step; the step centre is +60; plugin micro timing is % of a step.
+            const int time = jlimit (0, length * 120 - 1, s * 120 + 60 + roundToInt (step.micro * 1.2));
+            const int gate = jlimit (1, 16383, roundToInt (step.gate * 1.2));
+            std::array<int, 5> chord {};
+            const int voices = t >= 7 && t <= 9 ? seqtrak::stepNotes (step, chord) : (chord[0] = step.note, 1);
+            for (int v = 0; v < voices; ++v)
+            {
+                const std::vector<int> event { time >> 7, time & 127, 0, chord[size_t (v)], step.velocity, 0, gate >> 7, gate & 127 };
+                if (t < 7) hw.queueSysex (0x22, t << 4, 0, event);          // drum piano roll (global part 0-6)
+                else       hw.queueSysex (0x72, (t - 7) << 4, 0, event);    // synth piano roll (local index 0-3)
+                ++notesWritten;
+            }
+        }
+    }
+    printStatus->setText ("Printing... " + String (int (hw.queuedMessages())) + " messages (" + String (notesWritten)
+                          + " notes). Don't start SEQTRAK yet.", dontSendNotification);
 }
 
 void Panel::updateChainStatus()
@@ -2618,6 +2718,11 @@ void Panel::timerCallback()
         if (drawer >= 0) showDrawer (drawer, false);
     }
     if (drawer == 7) updateChainStatus();
+    if (drawer == 8 && printStatus != nullptr && processor.hardware.queuedMessages() > 0)
+        printStatus->setText ("Printing... " + String (int (processor.hardware.queuedMessages())) + " messages left. Don't start SEQTRAK yet.",
+                              dontSendNotification);
+    else if (drawer == 8 && printStatus != nullptr && printStatus->getText().startsWith ("Printing"))
+        printStatus->setText ("Done. Press play on SEQTRAK to hear the printed pattern.", dontSendNotification);
     bpm = roundToInt (bank.displayTempo.load());
     playing = bank.playing.load();
     head = bank.heads[size_t (track)].load();
@@ -2754,6 +2859,15 @@ void Panel::editStep (int index)
     auto& toggle = button (panel, { 16, 59, 103, 28 }, "ACTIVE", [this, &step] { step.on = !step.on; publishSequence(); repaint(); });
     toggle.setClickingTogglesState (true);
     toggle.setToggleState (step.on, dontSendNotification);
+    if (track >= 7 && track <= 9)   // synth and DX tracks: chord on this step
+    {
+        label (panel, { 136, 59, 60, 28 }, "CHORD", darkOrange);
+        StringArray chordNames;
+        for (const auto& c : seqtrak::chordTypes) chordNames.add (c.name);
+        auto& chord = combo (panel, { 196, 59, 150, 28 }, chordNames, step.chord);
+        chord.setTooltip ("Play a chord built on this step's MIDI note. PRINT TO SEQTRAK writes all its notes.");
+        chord.onChange = [this, &step, &chord] { step.chord = jmax (0, chord.getSelectedItemIndex()); publishSequence(); repaint(); };
+    }
     const auto add = [&] (int y, const String& name, int lo, int hi, int& value)
     {
         label (panel, { 16, y, 166, 35 }, name, darkOrange);

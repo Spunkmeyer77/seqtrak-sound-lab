@@ -373,6 +373,19 @@ private:
     }
     static double now() { return Time::getMillisecondCounterHiRes(); }
     void enqueue (Bytes bytes) { if (verified && output != nullptr) outbox.push_back (std::move (bytes)); }
+public:
+    // Parameter Change with an arbitrary payload, paced through the SysEx outbox.
+    bool queueSysex (int ah, int am, int al, const std::vector<int>& data)
+    {
+        if (!verified || output == nullptr) return false;
+        Bytes bytes { 0xf0, 0x43, uint8 (0x10 + device), 0x7f, 0x1c, 0x0c, uint8 (ah & 127), uint8 (am & 127), uint8 (al & 127) };
+        for (const int d : data) bytes.push_back (uint8 (d & 127));
+        bytes.push_back (0xf7);
+        outbox.push_back (std::move (bytes));
+        return true;
+    }
+    size_t queuedMessages() const { return outbox.size(); }
+private:
     void transmit (const Bytes& bytes)
     {
         if (output == nullptr) return;
