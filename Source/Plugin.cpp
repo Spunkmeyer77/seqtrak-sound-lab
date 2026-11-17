@@ -1384,6 +1384,8 @@ private:
     std::array<TextButton*, 6> navigation {};
     std::array<Slider*, 4> quick {};
     std::array<Label*, 4> quickNames {};
+    Label* quickNone = nullptr;
+    TextButton* quickDeep = nullptr;
     std::array<std::array<bool, 2>, 11> mix {};
     std::array<std::vector<int>, 11> values, captured, beforeCompare;
     std::array<std::vector<std::vector<int>>, 11> undo;
@@ -1490,6 +1492,13 @@ void Panel::makeMain()
         quick[size_t (i)] = &hostKnob ({ 966, 43 + i * 77, 78, 63 }, "quick" + String (i), "Parameter", true);
         quickNames[size_t (i)] = &label (*this, { 951, 104 + i * 77, 108, 18 }, {});
         quickNames[size_t (i)]->setJustificationType (Justification::centred);
+        if (i == 3)
+        {
+            // Shown when the selected parameter has no live MIDI control on the SEQTRAK.
+            quickNone = &label (*this, { 951, 120, 108, 90 }, "NO LIVE\nCONTROL\nFOR THIS\nPARAMETER");
+            quickNone->setJustificationType (Justification::centred);
+            quickDeep = &button (*this, { 956, 220, 98, 27 }, "DEEP EDIT", [this] { showDrawer (1); });
+        }
     }
 
     {
@@ -1660,6 +1669,7 @@ void Panel::refresh()
     for (int i = 0; i < 12; ++i) trackButtons[size_t (i)]->setToggleState (i == track + 1, dontSendNotification);
     for (int i = 0; i < sections.size(); ++i) sectionButtons[size_t (i)]->setToggleState (i == section, dontSendNotification);
     const auto& names = knobLabels[size_t (section)];
+    bool anyConnected = false;
     for (int i = 0; i < 4; ++i)
     {
         const auto name = i < names.size() ? names[i].toUpperCase() : String ("-");
@@ -1667,11 +1677,14 @@ void Panel::refresh()
         quick[size_t (i)]->setName (name);
         quick[size_t (i)]->setTooltip (name);
         const bool connected = i < names.size() && quickControl (section, i, track) >= 0;
+        // Only knobs that really send something to the SEQTRAK are shown.
         quick[size_t (i)]->setEnabled (connected);
-        quick[size_t (i)]->setAlpha (connected ? 1.0f : 0.40f);
-        if (i < names.size() && !connected)
-            quick[size_t (i)]->setTooltip (name + " - no MIDI control on SEQTRAK; edit it in Deep Edit");
+        quick[size_t (i)]->setVisible (connected);
+        quickNames[size_t (i)]->setVisible (connected);
+        if (connected) anyConnected = true;
     }
+    if (quickNone != nullptr) quickNone->setVisible (!anyConnected);
+    if (quickDeep != nullptr) quickDeep->setVisible (!anyConnected);
     processor.uiTrack.store (track);
     processor.uiSection.store (section);
     if (rollMode && !isSynth (track)) setRoll (false);
