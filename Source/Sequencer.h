@@ -118,9 +118,7 @@ struct Bank
         for (auto& head : heads) head.store (-1);
         for (auto& c : chainSlots) c.store (-1);
         for (auto& c : chainBars) c.store (1);
-        for (int t = 0; t < 11; ++t)
-            for (int s = 0; s < 16; ++s)
-                slots[0].sequence.grid[size_t (t)][0][size_t (s)].on = (s + t) % (t == 3 || t == 4 ? 2 : 4) == 0;
+        // Every pattern starts empty (pattern 1 used to hold a test beat).
     }
 };
 
