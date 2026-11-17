@@ -3145,9 +3145,12 @@ void Panel::printToSeqtrak()
                 ++notesWritten;
                 continue;
             }
+            // Synth parts count ticks from the start of the step (drum parts from its centre, +60):
+            // using the drum origin printed every synth note one step late on the hardware.
+            const int synthTime = jlimit (0, length * 120 - 1, s * 120 + roundToInt (step.micro * 1.2));
             for (int v = 0; v < voices; ++v)
             {
-                const std::vector<int> event { time >> 7, time & 127, 0, chord[size_t (v)], step.velocity, 0, gate >> 7, gate & 127 };
+                const std::vector<int> event { synthTime >> 7, synthTime & 127, 0, chord[size_t (v)], step.velocity, 0, gate >> 7, gate & 127 };
                 hw.queueSysex (0x72, (t - 7) << 4, 0, event);    // synth piano roll (local index 0-3)
                 ++notesWritten;
             }
