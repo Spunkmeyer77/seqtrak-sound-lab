@@ -71,7 +71,7 @@ String helpFor (const String& text)
         { "VOL+", "Raise the selected track's volume." }, { "VOL-", "Lower the selected track's volume." },
         { "DELETE", "Clear all steps of the selected track." },
         { "MUTE", "Mute the selected track (editor sequencer and SEQTRAK)." },
-        { "SOLO", "Solo the selected track (editor sequencer; SEQTRAK solos one track at a time)." },
+        { "SOLO", "Solo the selected track (editor sequencer; SEQTRAK solos one track at a time). Shortcuts: Shift + click a track knob = mute, Option (Alt) + click = solo." },
         { "PAGE", "Next page of the track's steps (turns FOLLOW off). Or click the page numbers above the pads." },
         { "PLAY", "Start or stop the sequencer (standalone; in a DAW use the DAW transport)." },
         { "USB", "Open Connection: choose SEQTRAK's USB ports and press IDENTIFY." },
@@ -1175,9 +1175,27 @@ public:
         if (e.y >= rollGT && e.y < rollGT + rollGH && col >= 0 && col < 16) editStep (col);
     }
     // Mirror MUTE/SOLO on SEQTRAK itself: CC 23 = mute (per track channel), CC 24 = solo (0 off, 1-11 = track).
-    void sendMixToSeqtrak (bool soloChanged)
+    // Shift + click a track knob/name = mute, Option (Alt) + click = solo, without changing the selection.
+    struct ModifierClick : MouseListener
+    {
+        std::function<void (const ModifierKeys&)> action;
+        void mouseDown (const MouseEvent& e) override { if (e.mods.isShiftDown() || e.mods.isAltDown()) action (e.mods); }
+    };
+    std::vector<std::unique_ptr<ModifierClick>> modifierClicks;
+    bool toggleMix (int t, const ModifierKeys& mods)
+    {
+        if (t < 0 || !(mods.isShiftDown() || mods.isAltDown())) return false;
+        const int j = mods.isAltDown() ? 1 : 0;
+        mix[size_t (t)][size_t (j)] = !mix[size_t (t)][size_t (j)];
+        publishSequence();
+        sendMixToSeqtrak (j == 1, t);
+        repaint();
+        return true;
+    }
+    void sendMixToSeqtrak (bool soloChanged, int t = -1)
     {
         auto& hw = processor.hardware;
+        const int track = t < 0 ? this->track : t;
         if (!soloChanged)
         {
             hw.sendControlNow (track, 23, mix[size_t (track)][0] ? 127 : 0);
@@ -1469,10 +1487,18 @@ void Panel::makeMain()
         const int column = i < 8 ? i % 4 : 4 + (i - 8) % 2;
         const int row = i < 8 ? i / 4 : (i - 8) / 2;
         const int x = 83 + column * 133, y = 57 + row * 100;
-        hostKnob ({ x, y, 76, 72 }, i == 0 ? "master" : "vol" + String (i - 1), title + " Volume", false);
+        auto& knob = hostKnob ({ x, y, 76, 72 }, i == 0 ? "master" : "vol" + String (i - 1), title + " Volume", false);
+        if (i > 0)
+        {
+            auto click = std::make_unique<ModifierClick>();
+            click->action = [this, i] (const ModifierKeys& mods) { toggleMix (i - 1, mods); };
+            knob.addMouseListener (click.get(), false);
+            modifierClicks.push_back (std::move (click));
+        }
         trackButtons[size_t (i)] = &button (*this, { x - 5, y + 73, 86, 19 }, title,
             [this, i]
             {
+                if (i > 0 && toggleMix (i - 1, ModifierKeys::getCurrentModifiers())) return;
                 if (i == 0)
                 {
                     section = sections.indexOf ("MIXER");
