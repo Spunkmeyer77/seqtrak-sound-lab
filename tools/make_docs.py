@@ -7,7 +7,7 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image, Kee
                                 Table, TableStyle, PageBreak)
 
 R = sys.argv[1]
-V = "0.6.0"
+V = "0.6.1"
 FIG = "/home/claude/figs"
 ORANGE = colors.HexColor("#E8743B")
 GREY = colors.HexColor("#3A3D40")
@@ -167,7 +167,7 @@ story = [
            "<b>Step pads:</b> top row = steps on/off (drag to paint), bottom row = open the step editor.",
            "<b>Beat marks:</b> small ticks on steps 1, 5, 9 and 13 for 4/4.",
            "<b>Parameter list:</b> chooses what the four orange knobs control (see chapter 9).",
-           "<b>Four orange knobs:</b> edit the selected track live on SEQTRAK. Dimmed knobs have no MIDI control (use Deep Edit).",
+           "<b>EDIT knobs:</b> edit the selected track live on SEQTRAK. Only knobs with a real MIDI control are shown; pages with none show NO LIVE CONTROL and a DEEP EDIT button.",
            "<b>FX:</b> MASTER/SINGLE switch and FX LEVEL fader.",
            "<b>Display:</b> sound name, preset number, pattern and the value of the control you are moving.",
            "<b>HIGH PASS and REPEATER:</b> master effects 2 and 3. REPEATER snaps to its 5 positions (darker stripes).",
@@ -181,6 +181,8 @@ story = [
         "(mute) or green (solo). Mute and solo affect the editor's sequencer <b>and</b> are sent to SEQTRAK, so they also work "
         "while SEQTRAK's own sequencer plays. SEQTRAK solos one track at a time: with several solos in the editor, SEQTRAK follows "
         "the last one you pressed.",
+        "<b>Shortcuts:</b> Shift + click a track's knob or name mutes it; Option + click (Alt on Windows) solos it, without "
+        "changing the selected track.",
         "Mutes and solos are stored in each pattern."])),
     ch("8. Sound Design: Presets",
        *fig("presets", 115*mm, "1 search, 2 category, 3 preset list, 4 status, 5 load."),
@@ -207,7 +209,7 @@ story = [
               ["MONO/POLY", "Mono / Poly / Chord on synth and DX tracks (CC 26)"],
               ["CHORD", "Mode (Mono/Poly/Chord), project Key (C–B) and Scale (1–8)"],
               ["MIXER", "Volume, pan, reverb and delay together"],
-              ["Other pages", "No MIDI control on SEQTRAK: the knobs are dimmed; edit these in Deep Edit"]],
+              ["Other pages", "No MIDI control on SEQTRAK: no knobs are shown; press DEEP EDIT to edit these"]],
              [40*mm, 130*mm]),
        Spacer(1, 4),
        bl(["<b>FX LEVEL</b> drives Master Effect 1 (MASTER) or the selected track's Single Effect (SINGLE). Choose effect types in TRACK FX.",
@@ -320,6 +322,7 @@ story = [
         "<b>HARDWARE FOLLOW:</b> pressing a track button on SEQTRAK selects it in the editor, and sampler pad hits flash on the display."])),
     ch("16. Help and Mouse Tips", bl([
         "<b>HELP</b> (top bar, off by default): when on (orange), rest the pointer on any control to see what it does.",
+        "Shift + click a track knob = mute; Option (Alt) + click = solo.",
         "Double-click a preset to load it; double-click a Deep Edit fader to reset it.",
         "Drag across the pads to paint steps; hold a pad to open its step editor.",
         "Click page numbers to change page; FOLLOW turns off so you can edit while it plays.",
@@ -342,6 +345,11 @@ SimpleDocTemplate(f"{R}/docs/SEQTRAK-Editor-v{V}-User-Manual.pdf", pagesize=A4, 
                   topMargin=18*mm, bottomMargin=18*mm, title="SEQTRAK Editor User Manual").build(story, onFirstPage=cover, onLaterPages=footer)
 
 hist = [Paragraph("SEQTRAK Editor", T), Paragraph("Update History · Transistor Labs", S),
+    ch("v0.6.1", bl(["Print to SEQTRAK: synth and DX notes now land on the right step (they printed one step late).",
+        "Pattern 1 now starts empty in a new session (it held a test beat).",
+        "EDIT section: only knobs that really control SEQTRAK are shown; other pages point to Deep Edit.",
+        "Shift + click a track knob or name = mute, Option (Alt) + click = solo.",
+        "Manual: velocity explained in more detail."])),
     ch("v0.6.0", bl(["Piano roll for Synth 1, Synth 2 and DX: two octaves, track tabs, scale lock, octave buttons, chord box, velocity lane, long notes (up to 16 steps).",
         "Step record and live record from a MIDI keyboard or the computer keyboard (STEP | LIVE switch and REC button); notes played together become chords.",
         "Notes played into the plugin now play the selected track on SEQTRAK (MIDI thru).",
